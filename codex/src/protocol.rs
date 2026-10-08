@@ -671,7 +671,7 @@ fn process(
     let endpoints: CodexEndpoints = serde_json::from_value(metadata["endpoints"].clone())
         .map_err(|_| CodexConnectorError::InvalidEndpoint)?;
     if command == "authorize_url" {
-        let identity = serde_json::from_value(metadata["identity"].clone())
+        let identity = serde_json::from_value(metadata["settings"].clone())
             .map_err(|_| CodexConnectorError::InvalidCredential)?;
         let pkce = PkceCodes {
             challenge: field(&metadata, "challenge")?.into(),
@@ -713,7 +713,7 @@ fn process(
         }
         "models_plan" | "quota_plan" | "quota_reset_plan" => {
             let identity: CodexOutboundIdentity =
-                serde_json::from_value(metadata["identity"].clone())
+                serde_json::from_value(metadata["settings"].clone())
                     .map_err(|_| CodexConnectorError::InvalidCredential)?;
             let auth = codex_headers(
                 &identity,

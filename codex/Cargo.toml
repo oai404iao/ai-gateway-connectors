@@ -10,9 +10,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ai-gateway-connector-sdk.workspace = true
+bytes = "1"
+sha2 = "0.10"
+uuid = "1"
 base64.workspace = true
 chrono.workspace = true
 http.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 url.workspace = true
