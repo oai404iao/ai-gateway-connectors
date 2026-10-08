@@ -27,9 +27,9 @@ credentials, routing, billing, and request logging remain gateway responsibiliti
 Use a gateway version built against the same SDK ABI and Codex command schema.
 An ABI match alone does not establish command-schema compatibility. The SDK Git
 revision is pinned in `Cargo.toml`/`Cargo.lock` and recorded in every archive.
-See the [SDK command contract](https://github.com/oai404iao/ai_gateway/blob/main/crates/connector-sdk/docs/commands.md)
+See the [SDK command contract](https://github.com/oai404iao/ai_gateway/blob/connector-sdk-v0.1.0/crates/connector-sdk/docs/commands.md)
 for required common commands and the separately version-coupled Codex control
-adapter; the [SDK example](https://github.com/oai404iao/ai_gateway/blob/main/crates/connector-sdk/examples/responses.rs)
+adapter; the [SDK example](https://github.com/oai404iao/ai_gateway/blob/connector-sdk-v0.1.0/crates/connector-sdk/examples/responses.rs)
 shows a routable generic connector without Codex lifecycle privileges.
 Linux GNU builds require a compatible glibc and native architecture; do not load
 them on musl/Alpine, Windows, or macOS.
