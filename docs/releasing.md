@@ -1,0 +1,60 @@
+# Release maintenance
+
+> Status: Current independent connector release workflow.
+
+Gateway and connector releases are independent. Never add this library to a
+gateway binary/image release or implement silent installation/fallback.
+
+## Version and compatibility
+
+Update `[workspace.package].version`, the dated `CHANGELOG.md` section, and
+examples together. Pin `ai-gateway-connector-sdk` to a reviewed **40-character
+Git commit**, regenerate `Cargo.lock`, and include both in the release commit.
+A local path dependency is permitted only while jointly developing the SDK;
+the tag workflow rejects it.
+
+ABI v1 has one C entry point, `ai_gateway_connector_entry_v1`. Metadata command
+schemas are additionally versioned by the SDK/connector release contract.
+Breaking descriptor or command changes require a coordinated gateway release;
+an unchanged descriptor ABI does not permit silently breaking commands.
+
+## Local gate
+
+Use the pinned Rust toolchain and a native GNU Linux host:
+
+```sh
+./scripts/check-release-version.sh 0.1.0 --require-pinned-sdk
+./scripts/verify-release.sh 0.1.0
+```
+
+This runs formatting, locked workspace Clippy/tests, builds and verifies the
+actual shared library archive. No provider secrets or real API calls are used.
+Packaging fails if required dependency license texts cannot be found. Archive
+verification checks its complete checksum set, descriptor ABI/manifest,
+recorded library digest, required license materials, and ELF architecture.
+
+## Tag pipeline
+
+After the reviewed release commit is on `main` and CI is green:
+
+```sh
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+Never move/reuse a published tag. The workflow verifies an annotated tag pointing
+to `main`, version/dated changelog consistency, and an immutable SDK pin. Read-only
+native build jobs run locked quality gates and package both:
+
+- `ubuntu-24.04`: `x86_64-unknown-linux-gnu`
+- `ubuntu-24.04-arm`: `aarch64-unknown-linux-gnu`
+
+Only the final publisher gets `contents: write`; it does not build untrusted code.
+It publishes the verified archives and per-archive checksums after **all** builds
+pass. GitHub automatically supplies source archives for the exact tag; package
+metadata records the source commit. Preserve corresponding source availability.
+
+Actions are pinned to full commit SHAs. CI has read-only permissions and no cache
+writes (including pull requests). Release jobs never install artifacts into the
+gateway or change administrator pins. Confirm both architecture artifacts and
+their `.sha256` files on the final GitHub Release.
