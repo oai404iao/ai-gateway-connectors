@@ -22,14 +22,14 @@ credentials, routing, billing, and request logging remain gateway responsibiliti
 | Command schema | SDK 0.1 / connector 0.1 |
 | Library | `libai_gateway_connector_codex.so` |
 | Release targets | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` |
-| Build baseline | Native Ubuntu 24.04, Rust 1.97.1 |
+| Build baseline | Pinned Debian bookworm Rust 1.97.1 container, GNU libc 2.36 or older requirements |
 
 Use a gateway version built against the same SDK ABI and Codex command schema.
 An ABI match alone does not establish command-schema compatibility. The SDK Git
 revision is pinned in `Cargo.toml`/`Cargo.lock` and recorded in every archive.
-See the [SDK command contract](https://github.com/oai404iao/ai_gateway/blob/main/crates/connector-sdk/docs/commands.md)
+See the [SDK command contract](https://github.com/oai404iao/ai_gateway/blob/connector-sdk-v0.1.0/crates/connector-sdk/docs/commands.md)
 for required common commands and the separately version-coupled Codex control
-adapter; the [SDK example](https://github.com/oai404iao/ai_gateway/blob/main/crates/connector-sdk/examples/responses.rs)
+adapter; the [SDK example](https://github.com/oai404iao/ai_gateway/blob/connector-sdk-v0.1.0/crates/connector-sdk/examples/responses.rs)
 shows a routable generic connector without Codex lifecycle privileges.
 Linux GNU builds require a compatible glibc and native architecture; do not load
 them on musl/Alpine, Windows, or macOS.

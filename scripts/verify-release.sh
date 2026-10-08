@@ -6,6 +6,7 @@ if [[ $# != 1 ]]; then
   exit 2
 fi
 ./scripts/check-release-version.sh "$1"
+python3 scripts/test-release-package.py
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace

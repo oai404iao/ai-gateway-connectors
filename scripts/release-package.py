@@ -2,8 +2,10 @@
 """Build and verify trusted native connector release archives."""
 
 import ctypes
+import gzip
 import hashlib
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -15,6 +17,10 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIBRARY = "libai_gateway_connector_codex.so"
 TARGET_MACHINES = {"x86_64-unknown-linux-gnu": 62, "aarch64-unknown-linux-gnu": 183}
+GLIBC_BASELINE = (2, 36)
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_MEMBER_BYTES = 256 * 1024 * 1024
 
 
 class ByteSlice(ctypes.Structure):
@@ -40,6 +46,20 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def verify_glibc_requirements(version_info):
+    names = set(re.findall(r"Name:\s+(GLIBC_\S+)", version_info))
+    if not names:
+        raise ValueError("library has no inspectable GNU libc version requirements")
+    for name in names:
+        suffix = name.removeprefix("GLIBC_")
+        if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", suffix):
+            raise ValueError("library requires an unsupported GNU libc ABI")
+        version = tuple(int(part) for part in suffix.split("."))
+        padded = (*version, *(0 for _ in range(3 - len(version))))
+        if padded > (*GLIBC_BASELINE, 0):
+            raise ValueError("library requires GNU libc newer than Debian bookworm (2.36)")
+
+
 def inspect_library(path, version, target):
     header = path.read_bytes()[:20]
     if (
@@ -48,6 +68,9 @@ def inspect_library(path, version, target):
         or int.from_bytes(header[18:20], "little") != TARGET_MACHINES[target]
     ):
         raise ValueError("library is not a supported 64-bit little-endian ELF target")
+    verify_glibc_requirements(subprocess.check_output(
+        ["readelf", "--version-info", "--wide", str(path)], text=True,
+    ))
     library = ctypes.CDLL(str(path.resolve()))
     entry = library.ai_gateway_connector_entry_v1
     entry.restype = ctypes.POINTER(Descriptor)
@@ -158,6 +181,7 @@ def build(version, target):
                 "connector_abi": 1,
                 "connector_version": version,
                 "target": target,
+                "glibc_baseline": ".".join(map(str, GLIBC_BASELINE)),
                 "library": LIBRARY,
                 "library_sha256": sha256(stage / LIBRARY),
                 "source_repository": "https://github.com/oai404iao/ai-gateway-connectors",
@@ -176,6 +200,76 @@ def build(version, target):
     print(archive)
 
 
+class BoundedArchiveReader:
+    def __init__(self, source):
+        self.source = source
+        self.read_bytes = 0
+
+    def read(self, size):
+        remaining = MAX_ARCHIVE_BYTES - self.read_bytes
+        data = self.source.read(min(size, remaining + 1) if size >= 0 else remaining + 1)
+        self.read_bytes += len(data)
+        if self.read_bytes > MAX_ARCHIVE_BYTES:
+            raise ValueError("archive exceeds the uncompressed size limit")
+        return data
+
+
+def extract_archive(archive, destination):
+    if destination.is_symlink() or not destination.is_dir() or any(destination.iterdir()):
+        raise ValueError("archive destination must be a fresh private directory")
+    if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("archive exceeds the compressed size limit")
+    seen = set()
+    total_bytes = 0
+    with gzip.open(archive, "rb") as expanded:
+        with tarfile.open(fileobj=BoundedArchiveReader(expanded), mode="r|") as source:
+            for member in source:
+                if len(seen) >= MAX_ARCHIVE_MEMBERS:
+                    raise ValueError("archive exceeds the member count limit")
+                name = member.name
+                path = pathlib.PurePosixPath(name)
+                if (
+                    not name or len(name) > 4096 or len(path.parts) > 32
+                    or path.is_absolute() or pathlib.PureWindowsPath(name).drive
+                    or "\\" in name or any(ord(char) < 32 or ord(char) == 127 for char in name)
+                    or any(part in ("", ".", "..") for part in name.split("/"))
+                    or path.as_posix() != name
+                ):
+                    raise ValueError("archive contains an unsafe or noncanonical path")
+                normalized = path.as_posix()
+                if normalized in seen:
+                    raise ValueError("archive contains duplicate entries")
+                seen.add(normalized)
+                if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE) \
+                        or member.sparse is not None:
+                    raise ValueError("archive contains nonregular entries")
+                if not 0 <= member.size <= MAX_MEMBER_BYTES or (member.isdir() and member.size):
+                    raise ValueError("archive member exceeds the size limit")
+                total_bytes += member.size
+                if total_bytes > MAX_ARCHIVE_BYTES:
+                    raise ValueError("archive exceeds the total size limit")
+                parent = destination
+                for part in path.parts if member.isdir() else path.parts[:-1]:
+                    parent /= part
+                    parent.mkdir(mode=0o700, exist_ok=True)
+                    if parent.is_symlink() or not parent.is_dir():
+                        raise ValueError("archive entry conflicts with a directory")
+                if member.isdir():
+                    continue
+                contents = source.extractfile(member)
+                if contents is None:
+                    raise ValueError("archive regular file has no contents")
+                with contents, (destination / normalized).open("xb") as output:
+                    os.fchmod(output.fileno(), 0o600)
+                    remaining = member.size
+                    while remaining:
+                        chunk = contents.read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            raise ValueError("archive member is truncated")
+                        output.write(chunk)
+                        remaining -= len(chunk)
+
+
 def verify(archive):
     archive = archive.resolve()
     checksum = archive.with_suffix(archive.suffix + ".sha256").read_text()
@@ -183,14 +277,7 @@ def verify(archive):
         raise ValueError("archive checksum mismatch")
     with tempfile.TemporaryDirectory(prefix=".verify-", dir=archive.parent) as temporary:
         extraction = pathlib.Path(temporary)
-        with tarfile.open(archive, "r:gz") as source:
-            members = source.getmembers()
-            names = [item.name for item in members]
-            if len(names) != len(set(names)) or any(
-                not (item.isfile() or item.isdir()) for item in members
-            ):
-                raise ValueError("archive contains duplicate or nonregular entries")
-            source.extractall(extraction, filter="data")
+        extract_archive(archive, extraction)
         roots = list(extraction.iterdir())
         if len(roots) != 1 or not roots[0].is_dir():
             raise ValueError("archive must contain a single package directory")
@@ -219,6 +306,8 @@ def verify(archive):
         info = json.loads((stage / "build-info.json").read_text())
         if info["schema_version"] != 1 or info["connector_abi"] != 1:
             raise ValueError("unsupported build-info schema or ABI")
+        if info["glibc_baseline"] != ".".join(map(str, GLIBC_BASELINE)):
+            raise ValueError("unsupported GNU libc baseline")
         if info["library"] != LIBRARY or info["library_sha256"] != sha256(stage / LIBRARY):
             raise ValueError("build-info library digest mismatch")
         manifest = inspect_library(stage / LIBRARY, info["connector_version"], info["target"])
@@ -235,5 +324,5 @@ if __name__ == "__main__":
             verify(pathlib.Path(sys.argv[2]))
         else:
             raise ValueError("usage: release-package.py build VERSION TARGET | verify ARCHIVE")
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    except (ValueError, KeyError, OSError, tarfile.TarError, subprocess.CalledProcessError) as error:
         raise SystemExit(str(error)) from error

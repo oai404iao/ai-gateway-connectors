@@ -31,7 +31,9 @@ This runs formatting, locked workspace Clippy/tests, builds and verifies the
 actual shared library archive. No provider secrets or real API calls are used.
 Packaging fails if required dependency license texts cannot be found. Archive
 verification checks its complete checksum set, descriptor ABI/manifest,
-recorded library digest, required license materials, and ELF architecture.
+recorded library digest, required license materials, ELF architecture, and GNU
+libc symbol requirements no newer than 2.36. Packaging requires `readelf`
+(binutils) and rejects artifacts built against a newer libc.
 
 ## Tag pipeline
 
@@ -48,6 +50,11 @@ native build jobs run locked quality gates and package both:
 
 - `ubuntu-24.04`: `x86_64-unknown-linux-gnu`
 - `ubuntu-24.04-arm`: `aarch64-unknown-linux-gnu`
+
+Both native runners build inside the same digest-pinned
+`rust:1.97.1-bookworm` image as the gateway, not against the runner's newer libc.
+The package gate checks the ELF version requirements before loading its ABI
+descriptor and records the 2.36 baseline in `build-info.json`.
 
 Only the final publisher gets `contents: write`; it does not build untrusted code.
 It publishes the verified archives and per-archive checksums after **all** builds
