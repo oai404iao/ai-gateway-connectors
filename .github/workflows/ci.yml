@@ -25,8 +25,12 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
+    container:
+      image: rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
     timeout-minutes: 30
     steps:
+      - name: Install packaging tools
+        run: apt-get update && apt-get install --yes --no-install-recommends python3 binutils gcc git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

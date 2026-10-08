@@ -16,7 +16,7 @@ sha256sum -c SHA256SUMS
 ```
 
 `manifest.json` is the module's exported manifest, not an installer.
-`build-info.json` records ABI, build target, library digest, source revision,
+`build-info.json` records ABI, build target, GNU libc baseline, library digest, source revision,
 and SDK source. This package does not configure identities or grant user access.
 
 ## Install and pin
@@ -51,6 +51,9 @@ For containers, mount the protected directory read-only at the configured
 absolute path. Keep the configured UID ownership rule valid inside the container.
 The plugin is not part of the standard gateway image; provision the mount before
 startup. Retain the package's licenses/notices with redistributed installations.
+Official artifacts target Debian bookworm's GNU libc 2.36 baseline and the
+matching CPU architecture; they can load in the official gateway image without
+requiring Ubuntu 24.04's newer libc. They are not musl/Alpine artifacts.
 
 ## Upgrade and rollback
 
@@ -76,4 +79,3 @@ runtime. Native system dependencies must still be present and trusted. The
 library pin does not cover transitive shared libraries. Avoid `$ORIGIN`-relative
 dependencies: the gateway loads a sealed `/proc/self/fd` image, not the original
 installation pathname.
-

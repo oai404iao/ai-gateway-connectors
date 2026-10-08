@@ -15,6 +15,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIBRARY = "libai_gateway_connector_codex.so"
 TARGET_MACHINES = {"x86_64-unknown-linux-gnu": 62, "aarch64-unknown-linux-gnu": 183}
+GLIBC_BASELINE = (2, 36)
 
 
 class ByteSlice(ctypes.Structure):
@@ -40,6 +41,20 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def verify_glibc_requirements(version_info):
+    names = set(re.findall(r"Name:\s+(GLIBC_\S+)", version_info))
+    if not names:
+        raise ValueError("library has no inspectable GNU libc version requirements")
+    for name in names:
+        suffix = name.removeprefix("GLIBC_")
+        if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", suffix):
+            raise ValueError("library requires an unsupported GNU libc ABI")
+        version = tuple(int(part) for part in suffix.split("."))
+        padded = (*version, *(0 for _ in range(3 - len(version))))
+        if padded > (*GLIBC_BASELINE, 0):
+            raise ValueError("library requires GNU libc newer than Debian bookworm (2.36)")
+
+
 def inspect_library(path, version, target):
     header = path.read_bytes()[:20]
     if (
@@ -48,6 +63,9 @@ def inspect_library(path, version, target):
         or int.from_bytes(header[18:20], "little") != TARGET_MACHINES[target]
     ):
         raise ValueError("library is not a supported 64-bit little-endian ELF target")
+    verify_glibc_requirements(subprocess.check_output(
+        ["readelf", "--version-info", "--wide", str(path)], text=True,
+    ))
     library = ctypes.CDLL(str(path.resolve()))
     entry = library.ai_gateway_connector_entry_v1
     entry.restype = ctypes.POINTER(Descriptor)
@@ -158,6 +176,7 @@ def build(version, target):
                 "connector_abi": 1,
                 "connector_version": version,
                 "target": target,
+                "glibc_baseline": ".".join(map(str, GLIBC_BASELINE)),
                 "library": LIBRARY,
                 "library_sha256": sha256(stage / LIBRARY),
                 "source_repository": "https://github.com/oai404iao/ai-gateway-connectors",
@@ -219,6 +238,8 @@ def verify(archive):
         info = json.loads((stage / "build-info.json").read_text())
         if info["schema_version"] != 1 or info["connector_abi"] != 1:
             raise ValueError("unsupported build-info schema or ABI")
+        if info["glibc_baseline"] != ".".join(map(str, GLIBC_BASELINE)):
+            raise ValueError("unsupported GNU libc baseline")
         if info["library"] != LIBRARY or info["library_sha256"] != sha256(stage / LIBRARY):
             raise ValueError("build-info library digest mismatch")
         manifest = inspect_library(stage / LIBRARY, info["connector_version"], info["target"])
