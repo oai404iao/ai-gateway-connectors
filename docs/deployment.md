@@ -1,81 +1,87 @@
 # Install the Codex connector
 
-> Status: Current Linux administrator installation procedure.
+> Status: Plugin-lifecycle deployment contract for connector 0.2; requires the matching gateway implementation.
 
 ## Verify an artifact
 
-Download the matching target archive and its `.sha256` file from a trusted
-[release](https://github.com/oai404iao/ai-gateway-connectors/releases). Review the
-release/tag and source revision before trusting checksums from the same source.
+Obtain the matching architecture archive and its `.sha256` file from a trusted
+[release](https://github.com/oai404iao/ai-gateway-connectors/releases). Review its
+source revision before trusting checksums from that same source.
 
 ```sh
-sha256sum -c ai-gateway-connector-codex-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf ai-gateway-connector-codex-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd ai-gateway-connector-codex-0.1.0-x86_64-unknown-linux-gnu
-sha256sum -c SHA256SUMS
+sha256sum -c ai-gateway-connector-codex-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-`manifest.json` is the module's exported manifest, not an installer.
-`build-info.json` records ABI, build target, GNU libc baseline, library digest, source revision,
-and SDK source. This package does not configure identities or grant user access.
+The archive contains the library, exported manifest, build information,
+checksums, and redistribution licenses. `build-info.json` records the ABI,
+target, libc baseline, library digest, source revision, and SDK source.
+Installation does not create credentials, grant access, or enable routes.
 
-## Install and pin
+## Directory and installation
 
-The library and every parent directory must be owned by root or the gateway
-effective user. Parent directories must not be group/other writable or symlinks.
-The library must be a regular file with no write permission bits.
-
-```sh
-sudo install -d -o root -g root -m 0755 /opt/ai-gateway/plugins/codex
-sudo install -o root -g root -m 0444 libai_gateway_connector_codex.so \
-  /opt/ai-gateway/plugins/codex/libai_gateway_connector_codex.so
-sha256sum /opt/ai-gateway/plugins/codex/libai_gateway_connector_codex.so
-```
-
-Add this startup configuration to the gateway TOML, replacing the digest with
-the **library file** SHA-256, not the archive digest:
+The gateway TOML selects one managed, persistent directory:
 
 ```toml
-[[plugins]]
-id = "codex"
-path = "/opt/ai-gateway/plugins/codex/libai_gateway_connector_codex.so"
-sha256 = "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
+[plugins]
+directory = "/var/lib/ai-gateway/plugins"
 ```
 
-Restart the gateway. Missing libraries, wrong hashes, unsupported platforms,
-unsafe paths, duplicate/reserved IDs, incompatible ABIs, and mismatched manifests
-fail closed. Persisted Codex routes require the installed Codex module; the
-gateway never substitutes `general`.
+Install a verified package using the gateway's administrator plugin-management
+page or its documented local incoming-directory workflow. Both use the same
+bounded package validation and immutable artifact store. Newly installed modules
+remain disabled until explicitly enabled. Do not overwrite an active `.so`.
 
-For containers, mount the protected directory read-only at the configured
-absolute path. Keep the configured UID ownership rule valid inside the container.
-The plugin is not part of the standard gateway image; provision the mount before
-startup. Retain the package's licenses/notices with redistributed installations.
-Official artifacts target Debian bookworm's GNU libc 2.36 baseline and the
-matching CPU architecture; they can load in the official gateway image without
-requiring Ubuntu 24.04's newer libc. They are not musl/Alpine artifacts.
+The gateway process must be able to manage the directory, while other users
+must not be able to write it. Keep ownership valid inside containers, use a
+persistent volume, and retain package licenses/notices. Unlike the old static
+TOML loader, a read-only plugin-directory mount cannot support web installation.
+Plugins remain separate from the standard gateway image.
 
-## Upgrade and rollback
+Official GNU artifacts target Debian bookworm's libc baseline and the matching
+CPU architecture; they are not musl/Alpine artifacts.
 
-1. Back up the existing TOML pin and installed artifact; retain its source revision.
-2. Verify compatibility and the new package checksum before maintenance.
-3. Stop the gateway, install the replacement with mode `0444`, update its pin, restart.
-4. Check startup and operator-visible connector availability before restoring traffic.
-5. Roll back by restoring **both** the previous artifact and digest, then restart.
+## Settings and activation
 
-The process holds already-loaded code until exit. Changing a file/config on disk
-does not replace code in a running process. Removal also requires restart and
-removing/disabling persisted routes which require that connector.
+The management page renders the plugin's localized settings descriptor.
+Configure client version, originator, User-Agent, synthetic workspace, and Git
+origin there—not in the gateway's system-settings document.
+
+The plugin validates its own values and compiles the immutable configuration.
+The gateway persists complete values and uses optimistic concurrency for saves.
+Changing plugin defaults does not silently change an existing saved document.
+Historical gateway settings must be migrated by the matching gateway upgrade.
+
+Enable a validated artifact explicitly. Missing, disabled, incompatible, or
+invalid modules make their routes unavailable without substituting `general`.
+Already loaded code is trusted native code even when business dispatch is disabled.
+
+## Compatible upgrades and rollback
+
+1. Retain the previous artifact, complete settings, and consistent database/spool backup.
+2. Install the new package without replacing the previous file.
+3. Validate command and settings-schema compatibility.
+4. Activate the new immutable generation; new operations use it while in-flight operations finish on their pinned generation.
+5. Roll back only when the previous code accepts the current persisted state and settings.
+
+The gateway does not physically unload library code in a running process.
+Repeated artifact loads are bounded and may eventually require a maintenance
+restart; settings-only updates reuse the same library.
+
+WebSocket connections do not cross plugin generations. Clients must recover
+from lost continuation state rather than move it to another upstream socket.
+Unfinished OAuth flows from another generation must restart authorization.
+Already-dispatched token/financial operations retain their durable recovery
+rules; enabling, disabling, upgrading, or rolling back never clears an intent.
+Incompatible persistent-state migrations are not promised as zero-downtime upgrades.
 
 ## Trust and native dependencies
 
-The loader verifies a sealed in-memory copy before executing the module. This
-prevents path replacement between hashing and loading, but not malicious code
-inside an approved artifact. Native code can access credentials and all process
-privileges; crashes and hangs are not contained.
+Installation and activation are privileged code-management operations, not
+ordinary business configuration. The loader verifies a frozen in-memory image
+before execution; a digest identifies approved bytes but does not sandbox them.
+Native code can access process credentials, crash, or hang the gateway.
 
-The module uses gateway transport rather than bringing an independent HTTP
-runtime. Native system dependencies must still be present and trusted. The
-library pin does not cover transitive shared libraries. Avoid `$ORIGIN`-relative
-dependencies: the gateway loads a sealed `/proc/self/fd` image, not the original
-installation pathname.
+The plugin uses gateway transport, not an independent HTTP runtime. Transitive
+native dependencies must also be trusted; a library digest does not cover them.
+Avoid `$ORIGIN`-relative dependencies because loading uses a sealed file image
+rather than the original installation pathname.

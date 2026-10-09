@@ -13,18 +13,20 @@ Git commit**, regenerate `Cargo.lock`, and include both in the release commit.
 A local path dependency is permitted only while jointly developing the SDK;
 the tag workflow rejects it.
 
-ABI v1 has one C entry point, `ai_gateway_connector_entry_v1`. Metadata command
-schemas are additionally versioned by the SDK/connector release contract.
-Breaking descriptor or command changes require a coordinated gateway release;
-an unchanged descriptor ABI does not permit silently breaking commands.
+ABI v1 has one C entry point, `ai_gateway_connector_entry_v1`. SDK 0.2 adds
+manifest `protocol_version: 2` for plugin-owned identity, privacy and settings.
+The package gate requires that marker plus `attempt.context` and the three
+settings describe/validate/compile commands. Older gateways reject the marker
+rather than executing the changed metadata contract incorrectly. C ABI version
+and command protocol version are independent; release compatible pairs.
 
 ## Local gate
 
 Use the pinned Rust toolchain and a native GNU Linux host:
 
 ```sh
-./scripts/check-release-version.sh 0.1.0 --require-pinned-sdk
-./scripts/verify-release.sh 0.1.0
+./scripts/check-release-version.sh 0.2.0 --require-pinned-sdk
+./scripts/verify-release.sh 0.2.0
 ```
 
 This runs formatting, locked workspace Clippy/tests, builds and verifies the
@@ -40,8 +42,8 @@ libc symbol requirements no newer than 2.36. Packaging requires `readelf`
 After the reviewed release commit is on `main` and CI is green:
 
 ```sh
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
 ```
 
 Never move/reuse a published tag. The workflow verifies an annotated tag pointing
@@ -63,5 +65,5 @@ metadata records the source commit. Preserve corresponding source availability.
 
 Actions are pinned to full commit SHAs. CI has read-only permissions and no cache
 writes (including pull requests). Release jobs never install artifacts into the
-gateway or change administrator pins. Confirm both architecture artifacts and
+gateway or change the administrator's selected active version. Confirm both architecture artifacts and
 their `.sha256` files on the final GitHub Release.

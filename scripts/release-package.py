@@ -88,13 +88,27 @@ def inspect_library(path, version, target):
     ):
         raise ValueError("invalid descriptor fields")
     manifest = json.loads(ctypes.string_at(descriptor.manifest.ptr, descriptor.manifest.length))
+    verify_manifest(manifest, version)
+    return manifest
+
+
+def verify_manifest(manifest, version):
     if manifest["id"] != "codex" or manifest["version"] != version:
         raise ValueError("exported plugin identity/version mismatch")
+    if manifest.get("protocol_version") != 2:
+        raise ValueError("Codex requires gateway command protocol version 2")
     for field in ("operations", "commands"):
         values = manifest[field]
         if not values or len(values) != len(set(values)):
             raise ValueError(f"invalid manifest {field}")
-    return manifest
+    required = {
+        "attempt.context",
+        "settings.describe/v1",
+        "settings.validate/v1",
+        "settings.compile/v1",
+    }
+    if not required.issubset(manifest["commands"]):
+        raise ValueError("plugin lacks required identity/settings commands")
 
 
 def dependency_licenses(stage, metadata):

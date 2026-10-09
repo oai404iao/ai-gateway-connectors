@@ -37,6 +37,22 @@ class GlibcBaselineTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=version_info):
                 PACKAGE.verify_glibc_requirements(version_info)
 
+    def test_command_protocol_rejects_old_gateways_and_partial_settings(self):
+        manifest = {
+            "id": "codex", "version": "0.2.0", "protocol_version": 2,
+            "operations": ["responses"],
+            "commands": [
+                "attempt.context", "settings.describe/v1",
+                "settings.validate/v1", "settings.compile/v1",
+            ],
+        }
+        PACKAGE.verify_manifest(manifest, "0.2.0")
+        for protocol in (None, 1, 3):
+            with self.assertRaises(ValueError):
+                PACKAGE.verify_manifest({**manifest, "protocol_version": protocol}, "0.2.0")
+        with self.assertRaises(ValueError):
+            PACKAGE.verify_manifest({**manifest, "commands": ["attempt.context"]}, "0.2.0")
+
 
 class ArchiveExtractionTests(unittest.TestCase):
     def archive(self, root, entries):

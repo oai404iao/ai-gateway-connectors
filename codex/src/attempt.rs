@@ -1,5 +1,10 @@
 //! Stateless data-plane adaptation; the host owns credentials and byte storage.
 
+use crate::{
+    identity::RequestIdentity,
+    request_policy::{self, RequestInterface, RequestPolicyLayer},
+    settings::Settings,
+};
 use ai_gateway_connector_sdk::{PluginCallError, PluginOutput};
 use serde_json::{Map, Value, json};
 
@@ -19,6 +24,10 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
         body: Vec::new(),
     };
     match command {
+        "attempt.context" => {
+            output.metadata = serde_json::to_value(RequestIdentity::prepare(&m)?)
+                .map_err(|_| error("invalid_request_context"))?
+        }
         "attempt.body" => {
             let protocol = string(&m, "protocol")?;
             match string(&m, "operation")? {
@@ -35,7 +44,21 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
                 "responses" | "responses-ws" | "images_generation" | "web_search" => {}
                 _ => return Err(error("unsupported_operation")),
             }
-            output.body = body.to_vec();
+            let interface = RequestInterface::from_metadata(&m)?;
+            let identity = RequestIdentity::from_metadata(&m)?;
+            let settings = Settings::from_metadata(&m)?;
+            let filtered = request_policy::apply_json_body_policy(
+                RequestPolicyLayer::CodexOauth,
+                interface,
+                bytes::Bytes::copy_from_slice(body),
+            )?;
+            output.body = request_policy::normalize_codex_fingerprints_in_json(
+                interface,
+                filtered.body,
+                &identity.privacy(&settings),
+            )?
+            .body
+            .to_vec();
         }
         "attempt.target" => {
             let path = match string(&m, "operation")? {
@@ -111,17 +134,68 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
 }
 
 fn headers(m: &Value) -> Result<Value, PluginCallError> {
+    let identity = RequestIdentity::from_metadata(m)?;
+    let settings = Settings::from_metadata(m)?;
+    let interface = RequestInterface::from_metadata(m)?;
+    let mut original = http::HeaderMap::new();
+    for (name, value) in m["headers"]
+        .as_object()
+        .ok_or_else(|| error("invalid_request_context"))?
+    {
+        if value.is_null() {
+            continue;
+        }
+        let name = http::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| error("invalid_request_context"))?;
+        let value = http::HeaderValue::from_str(
+            value
+                .as_str()
+                .ok_or_else(|| error("invalid_request_context"))?,
+        )
+        .map_err(|_| error("invalid_request_context"))?;
+        original.insert(name, value);
+    }
+    let mut filtered = request_policy::filter_codex_headers(interface, &original)?;
+    request_policy::normalize_codex_fingerprints_in_headers(
+        interface,
+        &mut filtered,
+        &identity.privacy(&settings),
+    );
+    let mut context = m.clone();
+    context["headers"] = json!(
+        filtered
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.to_str().unwrap_or("")))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    );
+    let m = &context;
     let operation = string(m, "operation")?;
     let mut set = Map::new();
-    let mut remove = Vec::new();
-    for (header, key) in [
-        ("user-agent", "user_agent"),
-        ("originator", "originator"),
-        ("version", "client_version"),
-        ("session-id", "session_id"),
-        ("thread-id", "thread_id"),
+    let mut remove = original
+        .keys()
+        .filter(|name| !filtered.contains_key(*name))
+        .map(|name| name.as_str())
+        .collect::<Vec<_>>();
+    for (name, value) in &filtered {
+        if original.get(name) != Some(value) {
+            set.insert(
+                name.to_string(),
+                json!(
+                    value
+                        .to_str()
+                        .map_err(|_| error("invalid_request_context"))?
+                ),
+            );
+        }
+    }
+    for (header, value) in [
+        ("user-agent", settings.user_agent.as_str()),
+        ("originator", settings.originator.as_str()),
+        ("version", settings.client_version.as_str()),
+        ("session-id", identity.session_id.as_str()),
+        ("thread-id", identity.thread_id.as_str()),
     ] {
-        set.insert(header.into(), Value::String(string(m, key)?.into()));
+        set.insert(header.into(), Value::String(value.into()));
     }
     set.insert(
         "authorization".into(),
@@ -138,7 +212,7 @@ fn headers(m: &Value) -> Result<Value, PluginCallError> {
         remove.push("x-openai-fedramp");
     }
     if m["headers"]["x-client-request-id"].is_null() {
-        set.insert("x-client-request-id".into(), m["thread_id"].clone());
+        set.insert("x-client-request-id".into(), json!(identity.thread_id));
     }
     match operation {
         "responses" | "responses-ws" => {
@@ -162,7 +236,7 @@ fn headers(m: &Value) -> Result<Value, PluginCallError> {
                 .as_str()
                 .map(str::trim)
                 .filter(|v| !v.is_empty() && v.len() <= 512)
-                .unwrap_or(string(m, "turn_id")?);
+                .unwrap_or(&identity.turn_id);
             set.insert("x-codex-image-turn-id".into(), json!(turn));
         }
         "web_search" => {
@@ -190,6 +264,7 @@ fn image_edit_plan(m: &Value) -> Result<Value, PluginCallError> {
     let fields = m["fields"]
         .as_array()
         .ok_or_else(|| error("invalid_field"))?;
+    request_policy::check_image_edit_fields(fields)?;
     let get = |name: &str| -> Result<Option<&str>, PluginCallError> {
         let mut matching = fields.iter().filter(|f| f["name"] == name);
         let first = matching.next();
@@ -243,12 +318,16 @@ mod tests {
     use super::*;
 
     fn header_context(operation: &str, protocol: &str) -> Value {
-        json!({
-            "operation":operation,"protocol":protocol,
+        let settings = Settings {
+            originator: "codex_gateway".into(),
+            client_version: "9.8.7".into(),
+            user_agent: "codex_gateway/9.8.7".into(),
+            ..Settings::default()
+        };
+        let identity = RequestIdentity::prepare(&json!({"credential_id":"11111111-1111-4111-8111-111111111111","request_id":"22222222-2222-4222-8222-222222222222","headers":{"session-id":"session","thread-id":"thread"},"operation":operation})).unwrap();
+        json!({"operation":operation,"protocol":protocol,
             "access_token":"access-token","account_id":"account-123","is_fedramp":false,
-            "user_agent":"codex_gateway/9.8.7","originator":"codex_gateway","client_version":"9.8.7",
-            "session_id":"session","thread_id":"thread","turn_id":"generated-turn","headers":{}
-        })
+            "settings":settings,"request_context":identity,"headers":{}})
     }
 
     #[test]
@@ -330,7 +409,7 @@ mod tests {
             context["headers"]["x-codex-image-turn-id"] = turn;
             assert_eq!(
                 headers(&context).unwrap()["set"]["x-codex-image-turn-id"],
-                "generated-turn"
+                "22222222-2222-4222-8222-222222222222"
             );
         }
     }
@@ -358,16 +437,10 @@ mod tests {
             .is_err()
         );
         let raw = br#"{ "stream":true }"#;
-        assert_eq!(
-            dispatch(
-                "attempt.body",
-                json!({"operation":"responses","protocol":"sse"}),
-                raw
-            )
-            .unwrap()
-            .body,
-            raw
-        );
+        let output = dispatch("attempt.body", header_context("responses", "sse"), raw).unwrap();
+        let output: Value = serde_json::from_slice(&output.body).unwrap();
+        assert_eq!(output["store"], false);
+        assert_eq!(output["client_metadata"]["session_id"], "session");
     }
 
     #[test]
