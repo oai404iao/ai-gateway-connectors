@@ -21,6 +21,14 @@ GLIBC_BASELINE = (2, 36)
 MAX_ARCHIVE_MEMBERS = 10_000
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_METADATA_BYTES = 1024 * 1024
+OPERATION_PROTOCOLS = {
+    "responses": "sse",
+    "responses-ws": "websocket",
+    "web_search": "non_stream",
+    "images_generation": "non_stream",
+    "images_edit": "non_stream",
+}
 
 
 class ByteSlice(ctypes.Structure):
@@ -35,6 +43,14 @@ class Descriptor(ctypes.Structure):
         ("dispatch", ctypes.c_void_p),
         ("free_buffer", ctypes.c_void_p),
     ]
+
+class CallOutput(ctypes.Structure):
+    _fields_ = [("metadata", ByteSlice), ("body", ByteSlice)]
+
+
+def cargo_target_directory():
+    path = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+    return path if path.is_absolute() else ROOT / path
 
 
 def sha256(path):
@@ -89,26 +105,88 @@ def inspect_library(path, version, target):
         raise ValueError("invalid descriptor fields")
     manifest = json.loads(ctypes.string_at(descriptor.manifest.ptr, descriptor.manifest.length))
     verify_manifest(manifest, version)
+    for operation in manifest["operations"]:
+        verify_attempt_descriptor(operation, inspect_attempt_descriptor(descriptor, operation))
     return manifest
+
+
+def inspect_attempt_descriptor(descriptor, operation):
+    dispatch = ctypes.CFUNCTYPE(
+        ctypes.c_uint32, ByteSlice, ByteSlice, ByteSlice, ctypes.POINTER(CallOutput),
+    )(descriptor.dispatch)
+    release = ctypes.CFUNCTYPE(None, ByteSlice)(descriptor.free_buffer)
+    command = ctypes.create_string_buffer(b"attempt.describe/v1")
+    encoded = json.dumps({"operation": operation}).encode()
+    metadata = ctypes.create_string_buffer(encoded)
+    output = CallOutput()
+    status = dispatch(
+        ByteSlice(ctypes.addressof(command), len(command.value)),
+        ByteSlice(ctypes.addressof(metadata), len(encoded)),
+        ByteSlice(None, 0),
+        ctypes.byref(output),
+    )
+    buffers = (output.metadata, output.body)
+    if any(
+        buffer.length > MAX_METADATA_BYTES or bool(buffer.ptr) != bool(buffer.length)
+        for buffer in buffers
+    ) or (output.metadata.ptr and output.metadata.ptr == output.body.ptr):
+        raise ValueError("invalid attempt descriptor allocation")
+    try:
+        if status != 0 or output.body.length:
+            raise ValueError("attempt descriptor command failed")
+        return json.loads(ctypes.string_at(output.metadata.ptr, output.metadata.length))
+    finally:
+        for buffer in buffers:
+            if buffer.length:
+                ctypes.memset(buffer.ptr, 0, buffer.length)
+            release(buffer)
+
+
+def verify_attempt_descriptor(operation, value):
+    if not isinstance(value, dict) or set(value) != {"capabilities", "protocols", "usage"}:
+        raise ValueError("invalid attempt descriptor shape")
+    capabilities = value["capabilities"]
+    required_flags = {
+        "preserves_affinity_on_failure", "successful_response_is_sse", "changes_request_body",
+    }
+    if (
+        not isinstance(capabilities, dict)
+        or set(capabilities) != required_flags
+        or any(type(flag) is not bool for flag in capabilities.values())
+    ):
+        raise ValueError("invalid attempt capability flags")
+    protocol = OPERATION_PROTOCOLS.get(operation)
+    if not protocol or value["protocols"] != [{"protocol": protocol, "response": "passthrough"}]:
+        raise ValueError("invalid Codex transport or response mode")
+    if value["usage"] != {"parser": "general", "format": "open_ai_responses"}:
+        raise ValueError("invalid Codex upstream usage descriptor")
+    if len(json.dumps(value).encode()) > MAX_METADATA_BYTES:
+        raise ValueError("attempt descriptor exceeds metadata limit")
 
 
 def verify_manifest(manifest, version):
     if manifest["id"] != "codex" or manifest["version"] != version:
         raise ValueError("exported plugin identity/version mismatch")
-    if manifest.get("protocol_version") != 2:
-        raise ValueError("Codex requires gateway command protocol version 2")
+    if manifest.get("protocol_version") != 3:
+        raise ValueError("Codex requires gateway command protocol version 3")
     for field in ("operations", "commands"):
         values = manifest[field]
         if not values or len(values) != len(set(values)):
             raise ValueError(f"invalid manifest {field}")
+    if set(manifest["operations"]) != set(OPERATION_PROTOCOLS):
+        raise ValueError("invalid Codex operation set")
+    if any(command.startswith("response.") for command in manifest["commands"]):
+        raise ValueError("Codex response adaptation is not supported")
     required = {
         "attempt.context",
+        "attempt.describe/v1",
+        "attempt.capabilities",
         "settings.describe/v1",
         "settings.validate/v1",
         "settings.compile/v1",
     }
     if not required.issubset(manifest["commands"]):
-        raise ValueError("plugin lacks required identity/settings commands")
+        raise ValueError("plugin lacks required identity/settings/descriptor commands")
 
 
 def dependency_licenses(stage, metadata):
@@ -166,9 +244,10 @@ def dependency_licenses(stage, metadata):
 def build(version, target):
     if target not in TARGET_MACHINES or not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("invalid version or target")
-    output = ROOT / "target" / "release-package"
+    target_directory = cargo_target_directory()
+    output = target_directory / "release-package"
     output.mkdir(parents=True, exist_ok=True)
-    source = ROOT / "target" / target / "release" / LIBRARY
+    source = target_directory / target / "release" / LIBRARY
     manifest = inspect_library(source, version, target)
     metadata = json.loads(
         subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=ROOT)

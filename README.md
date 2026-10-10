@@ -19,9 +19,9 @@ credentials, routing, billing, and request logging remain gateway responsibiliti
 | --- | --- |
 | Connector ID | `codex` |
 | Native SDK ABI | `1` |
-| Manifest protocol version | `2` (required; old hosts reject before dispatch) |
+| Manifest protocol version | `3` (required; incompatible hosts reject before dispatch) |
 | Release build-info schema | `1` |
-| Command schema | Codex configured-generation contract 2 |
+| Command schema | Codex configured-generation contract 3 with explicit transport/usage descriptors |
 | Settings schema | `1` (five provider-owned scalar fields) |
 | Library | `libai_gateway_connector_codex.so` |
 | Release targets | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` |
@@ -31,12 +31,38 @@ Use a gateway version built against the same SDK ABI and Codex command schema.
 An ABI match alone does not establish command-schema compatibility. The SDK Git
 revision is pinned in `Cargo.toml`/`Cargo.lock` and recorded in every archive.
 See the [SDK command contract](https://github.com/oai404iao/ai_gateway/blob/87892257453a11be128afa4f5ba863c93e9453f2/crates/connector-sdk/docs/commands.md)
-for the C ABI and configured-generation contract; this connector requires the gateway's
-plugin-lifecycle settings/context contract. It is not compatible with the
+for the C ABI and original configured-generation contract. The pinned SDK's
+ABI-1 JSON envelopes also encode the protocol-3 descriptors below without a
+dependency revision change. This connector requires a gateway supporting those
+descriptors and the plugin-lifecycle settings/context contract. It is not compatible with the
 startup-only gateway's identity-metadata protocol. The [SDK example](https://github.com/oai404iao/ai_gateway/blob/87892257453a11be128afa4f5ba863c93e9453f2/crates/connector-sdk/examples/responses.rs)
 shows a routable generic connector without Codex lifecycle privileges.
 Linux GNU builds require a compatible glibc and native architecture; do not load
 them on musl/Alpine, Windows, or macOS.
+
+`attempt.describe/v1` is a pure, bounded per-operation declaration with all three
+legacy capability flags, one supported protocol and response mode `passthrough`:
+
+| Operation | Protocol |
+| --- | --- |
+| `responses` | `sse` |
+| `responses-ws` | `websocket` |
+| `web_search`, `images_generation`, `images_edit` | `non_stream` |
+
+The gateway maps Images edit's non-streaming descriptor to multipart transport.
+Responses HTTP is streaming-only; the stronger descriptor allows the gateway
+to reject unsupported non-streaming requests before upstream dispatch.
+There are no `response.json/v1` or `response.event/v1` commands: provider response
+bytes, usage and terminal events remain unmodified.
+
+Every descriptor declares
+`"usage":{"parser":"general","format":"open_ai_responses"}`. This selects the
+gateway's shared parser by the **actual upstream usage interface**, including
+Codex Images and standalone search, rather than assuming the public client
+format determines provider counters. It does not estimate missing usage,
+change billing, parse OAuth quota windows, or give the plugin transport/database
+ownership. Canonical storage, input/cache token inclusion rules and prices remain
+gateway responsibilities.
 
 ## Build and test
 

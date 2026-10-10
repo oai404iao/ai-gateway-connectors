@@ -18,6 +18,15 @@ fn string<'a>(value: &'a Value, name: &str) -> Result<&'a str, PluginCallError> 
         .ok_or_else(|| error("invalid_request_body"))
 }
 
+fn capabilities(operation: &str) -> Value {
+    let responses = matches!(operation, "responses" | "responses-ws");
+    json!({
+        "preserves_affinity_on_failure": responses || operation == "web_search",
+        "successful_response_is_sse": responses,
+        "changes_request_body": responses || matches!(operation, "images_generation" | "images_edit")
+    })
+}
+
 pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, PluginCallError> {
     let mut output = PluginOutput {
         metadata: json!({}),
@@ -79,12 +88,23 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
         }
         "attempt.headers" => output.metadata = headers(&m)?,
         "attempt.capabilities" => {
+            output.metadata = capabilities(string(&m, "operation")?);
+        }
+        "attempt.describe/v1" => {
+            if !body.is_empty() {
+                return Err(error("invalid_request_body"));
+            }
             let operation = string(&m, "operation")?;
-            let responses = matches!(operation, "responses" | "responses-ws");
+            let protocol = match operation {
+                "responses" => "sse",
+                "responses-ws" => "websocket",
+                "web_search" | "images_generation" | "images_edit" => "non_stream",
+                _ => return Err(error("unsupported_operation")),
+            };
             output.metadata = json!({
-                "preserves_affinity_on_failure": responses || operation == "web_search",
-                "successful_response_is_sse": responses,
-                "changes_request_body": responses || matches!(operation, "images_generation" | "images_edit")
+                "capabilities": capabilities(operation),
+                "protocols":[{"protocol":protocol,"response":"passthrough"}],
+                "usage":{"parser":"general","format":"open_ai_responses"}
             });
         }
         "attempt.image_edit_plan" => {
@@ -316,6 +336,55 @@ fn image_edit_plan(m: &Value) -> Result<Value, PluginCallError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptors_are_bounded_and_reuse_general_for_actual_upstream_usage() {
+        for (operation, protocol) in [
+            ("responses", "sse"),
+            ("responses-ws", "websocket"),
+            ("web_search", "non_stream"),
+            ("images_generation", "non_stream"),
+            ("images_edit", "non_stream"),
+        ] {
+            let metadata = json!({"operation":operation});
+            let descriptor = dispatch("attempt.describe/v1", metadata.clone(), &[]).unwrap();
+            let legacy = dispatch("attempt.capabilities", metadata, &[]).unwrap();
+            assert!(descriptor.body.is_empty());
+            assert_eq!(descriptor.metadata.as_object().unwrap().len(), 3);
+            assert_eq!(descriptor.metadata["capabilities"], legacy.metadata);
+            for flag in [
+                "preserves_affinity_on_failure",
+                "successful_response_is_sse",
+                "changes_request_body",
+            ] {
+                assert!(descriptor.metadata["capabilities"][flag].is_boolean());
+            }
+            assert_eq!(
+                descriptor.metadata["protocols"],
+                json!([{"protocol":protocol,"response":"passthrough"}])
+            );
+            assert_eq!(
+                descriptor.metadata["usage"],
+                json!({"parser":"general","format":"open_ai_responses"})
+            );
+            assert!(
+                serde_json::to_vec(&descriptor.metadata).unwrap().len()
+                    <= ai_gateway_connector_sdk::MAX_METADATA_BYTES
+            );
+        }
+        for operation in ["unknown", "chat_completion", ""] {
+            assert!(dispatch("attempt.describe/v1", json!({"operation":operation}), &[]).is_err());
+        }
+        assert!(dispatch("attempt.describe/v1", json!({}), &[]).is_err());
+        assert!(
+            dispatch(
+                "attempt.describe/v1",
+                json!({"operation":"responses"}),
+                b"unexpected",
+            )
+            .is_err()
+        );
+    }
 
     fn header_context(operation: &str, protocol: &str) -> Value {
         let settings = Settings {

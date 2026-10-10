@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline regressions for the official runtime's native ABI floor."""
 
+import copy
 import importlib.util
 import io
 import os
@@ -39,19 +40,70 @@ class GlibcBaselineTests(unittest.TestCase):
 
     def test_command_protocol_rejects_old_gateways_and_partial_settings(self):
         manifest = {
-            "id": "codex", "version": "0.2.0", "protocol_version": 2,
-            "operations": ["responses"],
+            "id": "codex", "version": "0.2.0", "protocol_version": 3,
+            "operations": list(PACKAGE.OPERATION_PROTOCOLS),
             "commands": [
                 "attempt.context", "settings.describe/v1",
                 "settings.validate/v1", "settings.compile/v1",
+                "attempt.describe/v1", "attempt.capabilities",
             ],
         }
         PACKAGE.verify_manifest(manifest, "0.2.0")
-        for protocol in (None, 1, 3):
+        for protocol in (None, 1, 2, 4):
             with self.assertRaises(ValueError):
                 PACKAGE.verify_manifest({**manifest, "protocol_version": protocol}, "0.2.0")
+        for command in manifest["commands"]:
+            with self.assertRaises(ValueError):
+                PACKAGE.verify_manifest({
+                    **manifest,
+                    "commands": [value for value in manifest["commands"] if value != command],
+                }, "0.2.0")
+        for command in ["response.json/v1", "response.event/v1"]:
+            with self.assertRaises(ValueError):
+                PACKAGE.verify_manifest({
+                    **manifest, "commands": [*manifest["commands"], command],
+                }, "0.2.0")
+        with self.assertRaises(ValueError):
+            PACKAGE.verify_manifest({**manifest, "operations": ["responses"]}, "0.2.0")
         with self.assertRaises(ValueError):
             PACKAGE.verify_manifest({**manifest, "commands": ["attempt.context"]}, "0.2.0")
+
+    def test_attempt_descriptor_requires_typed_passthrough_and_actual_upstream_usage(self):
+        descriptor = {
+            "capabilities": {
+                "preserves_affinity_on_failure": True,
+                "successful_response_is_sse": True,
+                "changes_request_body": True,
+            },
+            "protocols": [{"protocol": "sse", "response": "passthrough"}],
+            "usage": {"parser": "general", "format": "open_ai_responses"},
+        }
+        for operation, protocol in PACKAGE.OPERATION_PROTOCOLS.items():
+            valid = copy.deepcopy(descriptor)
+            valid["protocols"][0]["protocol"] = protocol
+            PACKAGE.verify_attempt_descriptor(operation, valid)
+        invalid_values = [
+            {**descriptor, "extra": 1},
+            {**descriptor, "usage": None},
+            {**descriptor, "usage": {"parser": "plugin", "format": "open_ai_responses"}},
+            {**descriptor, "usage": {"parser": "general", "format": "open_ai_images"}},
+            {**descriptor, "protocols": [{"protocol": "non_stream", "response": "passthrough"}]},
+            {**descriptor, "protocols": [{"protocol": "sse", "response": "sse"}]},
+            {**descriptor, "protocols": descriptor["protocols"] * 2},
+            {**descriptor, "capabilities": {"successful_response_is_sse": True}},
+            {**descriptor, "capabilities": {**descriptor["capabilities"], "changes_request_body": 1}},
+        ]
+        for invalid in invalid_values:
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                PACKAGE.verify_attempt_descriptor("responses", invalid)
+        with self.assertRaises(ValueError):
+            PACKAGE.verify_attempt_descriptor("unknown", descriptor)
+
+    def test_packaging_honors_cargo_target_directory(self):
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/private/build/target"}):
+            self.assertEqual(PACKAGE.cargo_target_directory(), Path("/private/build/target"))
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "local-target"}):
+            self.assertEqual(PACKAGE.cargo_target_directory(), PACKAGE.ROOT / "local-target")
 
 
 class ArchiveExtractionTests(unittest.TestCase):

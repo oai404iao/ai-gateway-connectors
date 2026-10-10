@@ -2,6 +2,17 @@
 
 All notable changes follow Keep a Changelog and Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- Codex declares protocol 3 with explicit operation transports and pass-through
+  responses, preserving ABI 1, settings schema 1 and the reviewed SDK pin.
+- Usage descriptors reuse the gateway's general parser for the actual upstream
+  Responses counter interface across HTTP, WebSocket, Search and Images.
+- Native package verification validates pure typed descriptors and rejects
+  response adaptation; packaging supports isolated `CARGO_TARGET_DIR` builds.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
