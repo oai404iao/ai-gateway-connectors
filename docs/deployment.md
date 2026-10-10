@@ -1,6 +1,6 @@
 # Install the Codex connector
 
-> Status: Plugin-lifecycle deployment contract for connector 0.2; requires the matching gateway implementation.
+> Status: Current development deployment contract for connector 0.2 protocol 3; requires the matching gateway implementation.
 
 ## Verify an artifact
 
@@ -54,6 +54,13 @@ Historical gateway settings must be migrated by the matching gateway upgrade.
 Enable a validated artifact explicitly. Missing, disabled, incompatible, or
 invalid modules make their routes unavailable without substituting `general`.
 Already loaded code is trusted native code even when business dispatch is disabled.
+
+Protocol 3 requires a gateway accepting Codex's explicit `attempt.describe/v1`
+transport and upstream-usage declarations. Responses HTTP supports SSE only;
+WebSocket, Search and Images retain their operation-specific transports.
+All response modes are pass-through, with the gateway's `general` usage parser
+selected for the actual upstream Responses counter interface. Upgrading does
+not enable response rewriting or change the five-field settings schema.
 
 ## Compatible upgrades and rollback
 

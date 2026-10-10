@@ -13,7 +13,7 @@ pub fn manifest() -> PluginManifest {
     PluginManifest {
         id: "codex".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        protocol_version: 2,
+        protocol_version: 3,
         operations: [
             "responses",
             "responses-ws",
@@ -49,6 +49,7 @@ pub fn manifest() -> PluginManifest {
             "attempt.target",
             "attempt.headers",
             "attempt.capabilities",
+            "attempt.describe/v1",
             "attempt.image_edit_plan",
             "attempt.image_part_plan",
         ]
@@ -74,6 +75,28 @@ ai_gateway_connector_sdk::export_plugin!(manifest, dispatch);
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn manifest_declares_protocol_three_without_response_adaptation() {
+        let manifest = manifest();
+        assert_eq!(manifest.protocol_version, 3);
+        assert!(manifest.commands.iter().any(|c| c == "attempt.describe/v1"));
+        assert!(
+            manifest
+                .commands
+                .iter()
+                .any(|c| c == "attempt.capabilities")
+        );
+        assert!(!manifest.commands.iter().any(|c| c.starts_with("response.")));
+        assert!(
+            serde_json::to_vec(&manifest).unwrap().len()
+                <= ai_gateway_connector_sdk::MAX_MANIFEST_BYTES
+        );
+        let descriptor = dispatch("settings.describe/v1", json!({}), &[]).unwrap();
+        assert_eq!(descriptor.metadata["schema_version"], 1);
+        assert_eq!(descriptor.metadata["fields"].as_array().unwrap().len(), 5);
+        assert!(descriptor.body.is_empty());
+    }
 
     fn configured(mut metadata: Value) -> Value {
         let mut settings = serde_json::to_value(settings::Settings::default()).unwrap();

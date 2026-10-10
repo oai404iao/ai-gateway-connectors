@@ -13,12 +13,24 @@ Git commit**, regenerate `Cargo.lock`, and include both in the release commit.
 A local path dependency is permitted only while jointly developing the SDK;
 the tag workflow rejects it.
 
-ABI v1 has one C entry point, `ai_gateway_connector_entry_v1`. SDK 0.2 adds
-manifest `protocol_version: 2` for plugin-owned identity, privacy and settings.
-The package gate requires that marker plus `attempt.context` and the three
-settings describe/validate/compile commands. Older gateways reject the marker
+ABI v1 has one C entry point, `ai_gateway_connector_entry_v1`. This connector
+declares manifest `protocol_version: 3` for explicit transport and upstream-usage
+descriptors, preserving plugin-owned identity, privacy and settings.
+The package gate requires that marker, `attempt.describe/v1`, legacy
+`attempt.capabilities`, `attempt.context` and the three settings
+describe/validate/compile commands. It validates the bounded, typed descriptors
+for all operations through pure native dispatch without credentials or I/O.
+Descriptors must select response pass-through and the gateway's general parser
+for the actual upstream Responses usage interface; response-adapter commands
+are rejected. Incompatible gateways reject the marker
 rather than executing the changed metadata contract incorrectly. C ABI version
 and command protocol version are independent; release compatible pairs.
+
+The existing reviewed SDK Git pin is retained: its ABI-1 JSON encoding supports
+these metadata additions without importing unpublished SDK source. Settings
+schema remains 1. Native protocol metadata is not a package-version release;
+do not move or reuse an existing tag. Packaging honors `CARGO_TARGET_DIR`, including
+isolated development targets outside the source tree.
 
 ## Local gate
 
