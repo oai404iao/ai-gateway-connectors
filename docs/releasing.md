@@ -12,10 +12,8 @@ Update `[workspace.package].version` in `Cargo.toml`, add a dated entry in
 workspace crate's new version too, so the locked build gates accept the release.
 Keep historical changelog entries intact. Never move or reuse a published tag.
 
-Current source declares protocol 3 while the 0.2.0 release history records
-protocol 2. A manifest protocol change does not itself update the package
-version. Select a new package version before publishing the changed contract;
-do not republish it under `v0.2.0`.
+Version 0.2.1 declares protocol 3 while the 0.2.0 release history records
+protocol 2. Select a new package version before publishing a changed contract.
 
 Pin `ai-gateway-connector-sdk` to a reviewed 40-character Git commit. Regenerate
 `Cargo.lock` when the dependency changes as well. Include the updated lockfile and
@@ -47,13 +45,12 @@ official glibc baseline. Prerequisites are listed in [development](development.m
 With the current workspace version:
 
 ```sh
-./scripts/check-release-version.sh 0.2.0 --require-pinned-sdk
-./scripts/verify-release.sh 0.2.0
+./scripts/check-release-version.sh 0.2.1 --require-pinned-sdk
+./scripts/verify-release.sh 0.2.1
 bash -n scripts/*.sh
 ```
 
-Replace `0.2.0` after preparing the new version. These are local checks, not an
-instruction to recreate the historical tag.
+Replace `0.2.1` after preparing a new version.
 
 The combined gate runs package-verifier tests, formatting, locked Clippy and
 workspace tests, then builds and verifies the actual shared-library archive.

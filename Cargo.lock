@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ai-gateway-connector-codex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ai-gateway-connector-sdk",
  "base64",

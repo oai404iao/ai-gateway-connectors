@@ -30,7 +30,7 @@ python3 scripts/test-release-package.py
 bash -n scripts/*.sh
 ```
 
-For packaging changes, use `./scripts/verify-release.sh 0.2.0` with the current
+For packaging changes, use `./scripts/verify-release.sh 0.2.1` with the current
 workspace version on a supported native GNU Linux host. It builds and loads the
 real library and verifies its archive. See [development](docs/development.md) for
 prerequisites and output paths. Local checks need no provider credentials or
@@ -59,6 +59,5 @@ between pages, tables for reference values, and `sh` command examples. Start at
 page. `LICENSE` is legal text, not prose to rewrite.
 
 Read [release maintenance](docs/releasing.md) for version, changelog, SDK, and tag
-changes. The current source's protocol 3 is unreleased relative to the 0.2.0
-history; do not reuse that tag. Documentation edits do not authorize publishing,
-deployment, or changing an installed gateway.
+changes. Never reuse a version for a different command protocol. Documentation
+edits do not authorize publishing, deployment, or changing an installed gateway.

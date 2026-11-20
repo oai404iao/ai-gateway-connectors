@@ -4,7 +4,7 @@ Install Codex separately from the gateway, then configure and enable it through
 gateway administration. Installation does not create credentials, grant access,
 or enable routes.
 
-> Status: Current development deployment contract for protocol 3. Use a matching
+> Codex 0.2.1 uses command protocol 3. Use a matching
 > gateway implementation and check the manifest shipped with your artifact.
 
 ## 1. Check compatibility
@@ -14,8 +14,7 @@ downloading. Official artifacts support GNU Linux on x86_64 or aarch64, with
 glibc requirements no newer than 2.36. They are not musl/Alpine builds.
 
 A matching ABI alone is insufficient: the gateway must support the artifact's
-command protocol and plugin lifecycle. Do not assume an archive named `0.2.0`
-implements the unreleased protocol-3 contract.
+command protocol and plugin lifecycle.
 
 ## 2. Verify an artifact
 
@@ -27,7 +26,7 @@ the same download source does not independently establish trust.
 For example, with both files in the current directory:
 
 ```sh
-sha256sum -c ai-gateway-connector-codex-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c ai-gateway-connector-codex-0.2.1-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 Replace the version and target with those of your chosen release. The archive
