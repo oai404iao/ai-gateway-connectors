@@ -6,8 +6,7 @@ Install and enable it through a compatible gateway before configuring routes.
 
 ## Compatibility
 
-> Status: Current development contract. Protocol 3 support is required in the
-> gateway; the 0.2.0 changelog describes the earlier protocol-2 release.
+> Codex 0.2.1 requires command protocol 3 support in the gateway.
 
 | Contract | Current source |
 | --- | --- |

@@ -59,7 +59,7 @@ to validate prose.
 With the current workspace version and dated changelog entry:
 
 ```sh
-./scripts/package-release.sh 0.2.0
+./scripts/package-release.sh 0.2.1
 ```
 
 This builds the native release target, reads the real library's exported ABI
@@ -67,13 +67,11 @@ descriptor, packages it, and verifies the result. For the combined formatting,
 Clippy, Rust tests, Python package tests, build, and archive gate, use:
 
 ```sh
-./scripts/verify-release.sh 0.2.0
+./scripts/verify-release.sh 0.2.1
 ```
 
-These commands are local checks, not publication. The example matches the
-current workspace version; it does not make current protocol-3 source identical
-to the historical 0.2.0 release. Choose a new version before publishing changed
-code. Packaging honors `CARGO_TARGET_DIR`, including isolated build directories.
+These commands are local checks, not publication. Packaging honors
+`CARGO_TARGET_DIR`, including isolated build directories.
 
 ## Archive contents
 

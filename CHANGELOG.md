@@ -5,6 +5,8 @@ For the current source contract, see [Codex compatibility](docs/codex.md).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-20
+
 ### Changed
 
 - Codex requires command protocol 3, with explicit operation transports and
@@ -12,6 +14,9 @@ For the current source contract, see [Codex compatibility](docs/codex.md).
   unchanged.
 - Usage descriptors select the gateway's general parser for upstream Responses
   counters across HTTP, WebSocket, standalone search, and Images.
+- Responses HTTP and WebSocket strip caller-supplied routing hints and accept
+  prompt-cache TTLs of `30m` and `12h`. Images generation and edit support GIF
+  output with optional frame count and duration.
 - Native package verification checks pure typed descriptors and rejects response
   adaptation. Packaging supports isolated `CARGO_TARGET_DIR` builds.
 - User documentation is organized into installation, configuration, Codex

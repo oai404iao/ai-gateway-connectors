@@ -14,9 +14,8 @@ credentials, routing, billing, and request logging.
 
 ## Getting started
 
-> Status: Current source requires Codex command protocol 3 and a matching
-> gateway. The published 0.2.0 history records protocol 2; do not infer protocol
-> compatibility from the package version or ABI alone.
+> Codex 0.2.1 requires a gateway that supports command protocol 3. The 0.2.0
+> changelog records protocol 2; an ABI match alone does not imply compatibility.
 
 1. Check the gateway and platform against [Codex compatibility](docs/codex.md#compatibility).
 2. Obtain a trusted archive for your architecture and [verify and install it](docs/deployment.md).
