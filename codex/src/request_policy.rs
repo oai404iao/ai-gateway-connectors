@@ -108,6 +108,10 @@ pub(crate) enum FieldDisposition {
     Allow,
     Ignore,
 }
+
+pub(crate) const GIF_CONTROLS: [(&str, std::ops::RangeInclusive<u64>); 2] =
+    [("frame_count", 2..=16), ("frame_duration_ms", 20..=2000)];
+
 pub(crate) fn apply_json_body_policy(
     layer: RequestPolicyLayer,
     interface: RequestInterface,
@@ -118,11 +122,12 @@ pub(crate) fn apply_json_body_policy(
         .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
     let mut ignored_fields = Vec::new();
     let mut changed = false;
+    let mut gif = false;
     for (field, raw_value) in &raw_fields {
         let inspected_value = policy
             .ignore
             .get(field)
-            .and_then(|rule| rule.accepted_values.as_ref())
+            .filter(|rule| rule.accepted_values.is_some() || !rule.forward_values.is_empty())
             .map(|_| {
                 serde_json::from_str::<Value>(raw_value.get())
                     .map_err(|_| RequestPolicyError::invalid_body(layer, interface))
@@ -138,6 +143,24 @@ pub(crate) fn apply_json_body_policy(
         if disposition == FieldDisposition::Ignore {
             ignored_fields.push(field.clone());
             changed = true;
+        } else if field == "output_format" {
+            gif = inspected_value.as_ref().and_then(Value::as_str) == Some("gif");
+        }
+    }
+    if interface == RequestInterface::ImagesGeneration {
+        for (name, range) in GIF_CONTROLS {
+            if let Some(raw) = raw_fields.get(name)
+                && !(gif
+                    && serde_json::from_str::<u64>(raw.get()).is_ok_and(|n| range.contains(&n)))
+            {
+                return Err(RequestPolicyError::field(
+                    layer,
+                    interface,
+                    RequestPolicyLocation::Body,
+                    RequestPolicyFailure::UnsupportedValue,
+                    name,
+                ));
+            }
         }
     }
     if layer == RequestPolicyLayer::CodexOauth {
@@ -455,6 +478,9 @@ fn field_disposition_for_policy(
         return Ok(FieldDisposition::Allow);
     }
     if let Some(rule) = policy.ignore.get(field) {
+        if value.is_some_and(|value| rule.forward_values.contains(value)) {
+            return Ok(FieldDisposition::Allow);
+        }
         if rule.accepted_values.as_ref().is_some_and(|accepted| {
             value.is_none_or(|value| !accepted.iter().any(|candidate| candidate == value))
         }) {
@@ -579,6 +605,8 @@ struct BodyPolicy {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IgnoredFieldRule {
+    #[serde(default)]
+    forward_values: Vec<Value>,
     #[serde(default)]
     accepted_values: Option<Vec<Value>>,
 }
@@ -834,6 +862,45 @@ mod tests {
             turn_metadata["workspaces"]["/workspace"]["associated_remote_urls"]["origin"],
             "https://github.com/oai404iao/ai_gateway"
         );
+    }
+
+    #[test]
+    fn generation_gif_controls_are_optional_bounded_integer_siblings() {
+        let apply = |body: Value| {
+            apply_json_body_policy(
+                RequestPolicyLayer::CodexOauth,
+                RequestInterface::ImagesGeneration,
+                Bytes::from(serde_json::to_vec(&body).unwrap()),
+            )
+        };
+        for body in [
+            json!({"output_format":"gif"}),
+            json!({"output_format":"gif","frame_count":2}),
+            json!({"output_format":"gif","frame_duration_ms":20}),
+            json!({"output_format":"gif","frame_count":16,"frame_duration_ms":2000}),
+        ] {
+            let applied = apply(body.clone()).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&applied.body).unwrap(),
+                body
+            );
+        }
+        for body in [
+            json!({"frame_count":2}),
+            json!({"output_format":"png","frame_duration_ms":20}),
+            json!({"output_format":"gif","frame_count":"2"}),
+            json!({"output_format":"gif","frame_count":1}),
+            json!({"output_format":"gif","frame_count":17}),
+            json!({"output_format":"gif","frame_duration_ms":19}),
+            json!({"output_format":"gif","frame_duration_ms":2001}),
+            json!({"output_format":"gif","frame_duration_ms":99.5}),
+            json!({"output_format":"gif","frame_count":null}),
+        ] {
+            assert_eq!(
+                apply(body).unwrap_err().code(),
+                "codex_request_body_field_value_unsupported"
+            );
+        }
     }
 
     #[test]

@@ -324,6 +324,20 @@ fn image_edit_plan(m: &Value) -> Result<Value, PluginCallError> {
             ),
         );
     }
+    let gif = get("output_format")? == Some("gif");
+    if gif {
+        object.insert("output_format".into(), json!("gif"));
+    }
+    for (name, range) in request_policy::GIF_CONTROLS {
+        if let Some(value) = get(name)? {
+            let frames = value
+                .parse::<u64>()
+                .ok()
+                .filter(|n| gif && range.contains(n))
+                .ok_or_else(|| error("codex_request_body_field_value_unsupported"))?;
+            object.insert(name.into(), json!(frames));
+        }
+    }
     if let Some(stream) = get("stream")?
         && !(stream.trim().eq_ignore_ascii_case("false") || stream.trim() == "0")
     {
@@ -472,6 +486,53 @@ mod tests {
     }
 
     #[test]
+    fn caller_routing_hint_is_not_forwarded() {
+        for (op, protocol) in [("responses", "sse"), ("responses-ws", "websocket")] {
+            let mut m = header_context(op, protocol);
+            m["headers"]["x-codex-routing-hint"] = json!("model=client;tier=priority");
+            let plan = headers(&m).unwrap();
+            assert!(
+                plan["remove"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("x-codex-routing-hint"))
+            );
+            assert!(plan["set"].get("x-codex-routing-hint").is_none());
+        }
+    }
+
+    #[test]
+    fn responses_forward_only_supported_prompt_cache_options() {
+        for (op, protocol) in [("responses", "sse"), ("responses-ws", "websocket")] {
+            let metadata = header_context(op, protocol);
+            let adapt = |options: Value| {
+                dispatch(
+                    "attempt.body",
+                    metadata.clone(),
+                    &serde_json::to_vec(&json!({"prompt_cache_options":options})).unwrap(),
+                )
+            };
+            for ttl in ["30m", "12h"] {
+                let options = json!({"ttl":ttl});
+                let body: Value =
+                    serde_json::from_slice(&adapt(options.clone()).unwrap().body).unwrap();
+                assert_eq!(body["prompt_cache_options"], options);
+            }
+            let body: Value = serde_json::from_slice(&adapt(Value::Null).unwrap().body).unwrap();
+            assert!(body.get("prompt_cache_options").is_none());
+            for invalid in [
+                json!({}),
+                json!("30m"),
+                json!({"ttl":30}),
+                json!({"ttl":"24h"}),
+                json!({"ttl":"12h","other":null}),
+            ] {
+                assert!(adapt(invalid).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn image_turn_defaults_only_when_caller_has_no_valid_turn() {
         for turn in [Value::Null, json!(" "), json!("x".repeat(513))] {
             let mut context = header_context("images_generation", "non_stream");
@@ -549,6 +610,51 @@ mod tests {
             .unwrap()
             .push(json!({"name":"prompt","value":"duplicate"}));
         assert!(image_edit_plan(&bad).is_err());
+    }
+
+    #[test]
+    fn image_commands_forward_gif_controls_as_integer_siblings() {
+        let plan = |extra: &[(&str, &str)]| {
+            let fields = [("model", "gpt-image"), ("prompt", "animate")]
+                .iter()
+                .chain(extra)
+                .map(|(name, value)| json!({"name":name,"value":value}))
+                .collect::<Vec<_>>();
+            dispatch(
+                "attempt.image_edit_plan",
+                json!({"image_count":1}),
+                &serde_json::to_vec(&fields).unwrap(),
+            )
+        };
+        let output = plan(&[
+            ("output_format", "gif"),
+            ("frame_count", "2"),
+            ("frame_duration_ms", "2000"),
+        ])
+        .unwrap();
+        let edit: Value = serde_json::from_slice(&output.body).unwrap();
+        let generation = dispatch("attempt.body", header_context("images_generation", "non_stream"),
+            br#"{"model":"gpt-image","prompt":"animate","output_format":"gif","frame_count":2,"frame_duration_ms":2000,"moderation":"auto"}"#).unwrap();
+        let generation: Value = serde_json::from_slice(&generation.body).unwrap();
+        for body in [edit, generation] {
+            assert_eq!(body["output_format"], "gif");
+            assert_eq!(body["frame_count"], 2);
+            assert_eq!(body["frame_duration_ms"], 2000);
+        }
+        for fields in [
+            vec![("frame_duration_ms", "20")],
+            vec![("output_format", "png"), ("frame_count", "2")],
+            vec![("output_format", "gif"), ("frame_count", "2.5")],
+            vec![("output_format", "gif"), ("frame_count", "17")],
+            vec![("output_format", "gif"), ("frame_duration_ms", "19")],
+            vec![
+                ("output_format", "gif"),
+                ("frame_count", "2"),
+                ("frame_count", "3"),
+            ],
+        ] {
+            assert!(plan(&fields).is_err());
+        }
     }
 
     #[test]
