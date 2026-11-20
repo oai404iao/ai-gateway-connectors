@@ -62,6 +62,10 @@ does not guarantee that a particular model or credential has provider access.
   `low`, `medium`, `high`, or `auto`. `n` must parse as an unsigned integer.
 - Image streaming is unsupported. An edit `stream` field is accepted only as
   `false` or `0` and is not forwarded.
+- Generation and edit accept `output_format=gif` with optional sibling integer
+  fields `frame_count` (2–16) and `frame_duration_ms` (20–2000). Multipart
+  carries them as decimal text. Without GIF output, neither control is valid.
+  Omitted controls stay omitted; `output_format=png` remains an ignored default.
 - Edit fields `input_fidelity`, `mask`, and `output_compression` are rejected.
 - Image parts need an `image/` content type of at most 128 bytes, or a recognized
   `.png`, `.jpg`, `.jpeg`, `.webp`, or `.gif` filename when the type is absent.
@@ -99,6 +103,11 @@ reauthorization; generic backend failures or malformed model/quota data should
 be diagnosed as such, not treated automatically as a reason to log in again.
 
 ## Responses and usage
+
+The connector strips caller-supplied `x-codex-routing-hint`; the gateway can
+generate the HTTP or WebSocket handshake hint from the final wire model and tier.
+For both transports, `prompt_cache_options` accepts exactly `{"ttl":"30m"}` or
+`{"ttl":"12h"}`; `null` is omitted and other values are rejected.
 
 Every operation declares response mode `passthrough`. Codex does not implement
 `response.json/v1` or `response.event/v1`; it does not rewrite provider response

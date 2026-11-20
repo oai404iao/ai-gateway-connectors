@@ -33,7 +33,6 @@
             "tracestate",
             "x-client-request-id",
             "x-codex-beta-features",
-            "x-codex-routing-hint",
             "x-codex-turn-metadata",
             "x-codex-turn-state",
             "x-codex-window-id",
@@ -57,6 +56,7 @@
             "user-agent",
             "version",
             "x-client-request-id",
+            "x-codex-routing-hint",
             "x-codex-turn-metadata",
             "x-codex-window-id",
             "x-openai-fedramp"
@@ -118,6 +118,7 @@
               ]
             },
             "prompt_cache_options": {
+              "forward_values": [{"ttl": "30m"}, {"ttl": "12h"}],
               "accepted_values": [
                 null
               ]
@@ -174,7 +175,6 @@
             "tracestate",
             "x-client-request-id",
             "x-codex-beta-features",
-            "x-codex-routing-hint",
             "x-codex-turn-metadata",
             "x-codex-turn-state",
             "x-codex-window-id",
@@ -199,6 +199,7 @@
             "user-agent",
             "version",
             "x-client-request-id",
+            "x-codex-routing-hint",
             "x-codex-turn-metadata",
             "x-codex-window-id",
             "x-openai-fedramp"
@@ -262,6 +263,7 @@
               ]
             },
             "prompt_cache_options": {
+              "forward_values": [{"ttl": "30m"}, {"ttl": "12h"}],
               "accepted_values": [
                 null
               ]
@@ -399,6 +401,8 @@
           "unknown": "reject",
           "allow": [
             "background",
+            "frame_count",
+            "frame_duration_ms",
             "model",
             "n",
             "prompt",
@@ -418,6 +422,7 @@
               ]
             },
             "output_format": {
+              "forward_values": ["gif"],
               "accepted_values": [
                 null,
                 "png"
@@ -493,6 +498,8 @@
           "unknown": "reject",
           "allow": [
             "background",
+            "frame_count",
+            "frame_duration_ms",
             "image",
             "image[]",
             "model",
@@ -508,6 +515,7 @@
               ]
             },
             "output_format": {
+              "forward_values": ["gif"],
               "accepted_values": [
                 "png"
               ]
