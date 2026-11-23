@@ -16,21 +16,6 @@ pub(crate) enum RequestInterface {
     ImagesEdit,
 }
 impl RequestInterface {
-    pub fn from_metadata(m: &Value) -> Result<Self, PluginCallError> {
-        match m["operation"].as_str() {
-            Some("responses" | "responses-ws") if m["protocol"] == "websocket" => {
-                Ok(Self::ResponsesWebSocket)
-            }
-            Some("responses" | "responses-ws") => Ok(Self::ResponsesHttp),
-            Some("web_search") => Ok(Self::StandaloneWebSearch),
-            Some("images_generation") => Ok(Self::ImagesGeneration),
-            Some("images_edit") => Ok(Self::ImagesEdit),
-            _ => Err(PluginCallError::new(
-                "unsupported_operation",
-                "Unsupported operation",
-            )),
-        }
-    }
     fn as_str(self) -> &'static str {
         match self {
             Self::ResponsesHttp => "responses_http",
@@ -41,62 +26,26 @@ impl RequestInterface {
         }
     }
 }
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum RequestPolicyLayer {
-    CodexOauth,
-}
-#[derive(Clone, Copy)]
-enum RequestPolicyLocation {
-    Header,
-    Body,
-}
-#[derive(Clone, Copy)]
-enum RequestPolicyFailure {
-    UnsupportedField,
-    UnsupportedValue,
-}
 #[derive(Debug)]
-pub(crate) struct RequestPolicyError {
-    code: &'static str,
+pub(crate) enum RequestPolicyError {
+    InvalidBody,
+    UnsupportedBodyField,
+    UnsupportedBodyValue,
+    UnsupportedHeader,
 }
 impl RequestPolicyError {
-    #[cfg(test)]
-    fn code(&self) -> &str {
-        self.code
-    }
-    fn invalid_body(_: RequestPolicyLayer, _: RequestInterface) -> Self {
-        Self {
-            code: "invalid_request_body",
-        }
-    }
-    fn field(
-        _: RequestPolicyLayer,
-        _: RequestInterface,
-        location: RequestPolicyLocation,
-        failure: RequestPolicyFailure,
-        _: &str,
-    ) -> Self {
-        Self {
-            code: match (location, failure) {
-                (RequestPolicyLocation::Header, RequestPolicyFailure::UnsupportedField) => {
-                    "codex_request_header_unsupported"
-                }
-                (RequestPolicyLocation::Header, RequestPolicyFailure::UnsupportedValue) => {
-                    "codex_request_header_value_unsupported"
-                }
-                (RequestPolicyLocation::Body, RequestPolicyFailure::UnsupportedField) => {
-                    "codex_request_body_field_unsupported"
-                }
-                (RequestPolicyLocation::Body, RequestPolicyFailure::UnsupportedValue) => {
-                    "codex_request_body_field_value_unsupported"
-                }
-            },
+    fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidBody => "invalid_request_body",
+            Self::UnsupportedBodyField => "codex_request_body_field_unsupported",
+            Self::UnsupportedBodyValue => "codex_request_body_field_value_unsupported",
+            Self::UnsupportedHeader => "codex_request_header_unsupported",
         }
     }
 }
 impl From<RequestPolicyError> for PluginCallError {
     fn from(e: RequestPolicyError) -> Self {
-        Self::new(e.code, "Codex request policy rejected the request")
+        Self::new(e.code(), "Codex request policy rejected the request")
     }
 }
 #[derive(Debug)]
@@ -113,33 +62,28 @@ pub(crate) const GIF_CONTROLS: [(&str, std::ops::RangeInclusive<u64>); 2] =
     [("frame_count", 2..=16), ("frame_duration_ms", 20..=2000)];
 
 pub(crate) fn apply_json_body_policy(
-    layer: RequestPolicyLayer,
     interface: RequestInterface,
     body: Bytes,
 ) -> Result<AppliedJsonBody, RequestPolicyError> {
-    let policy = body_policy(layer, interface);
+    let policy = connector_policy(interface);
     let raw_fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
+        .map_err(|_| RequestPolicyError::InvalidBody)?;
     let mut ignored_fields = Vec::new();
     let mut changed = false;
     let mut gif = false;
     for (field, raw_value) in &raw_fields {
         let inspected_value = policy
+            .body
             .ignore
             .get(field)
             .filter(|rule| rule.accepted_values.is_some() || !rule.forward_values.is_empty())
             .map(|_| {
                 serde_json::from_str::<Value>(raw_value.get())
-                    .map_err(|_| RequestPolicyError::invalid_body(layer, interface))
+                    .map_err(|_| RequestPolicyError::InvalidBody)
             })
             .transpose()?;
-        let disposition = field_disposition_for_policy(
-            layer,
-            interface,
-            policy,
-            field,
-            inspected_value.as_ref(),
-        )?;
+        let disposition =
+            field_disposition_for_policy(&policy.body, field, inspected_value.as_ref())?;
         if disposition == FieldDisposition::Ignore {
             ignored_fields.push(field.clone());
             changed = true;
@@ -153,45 +97,35 @@ pub(crate) fn apply_json_body_policy(
                 && !(gif
                     && serde_json::from_str::<u64>(raw.get()).is_ok_and(|n| range.contains(&n)))
             {
-                return Err(RequestPolicyError::field(
-                    layer,
-                    interface,
-                    RequestPolicyLocation::Body,
-                    RequestPolicyFailure::UnsupportedValue,
-                    name,
-                ));
+                return Err(RequestPolicyError::UnsupportedBodyValue);
             }
         }
     }
-    if layer == RequestPolicyLayer::CodexOauth {
-        for (field, override_value) in &connector_policy(interface).body_overrides {
-            let current_value = raw_fields
-                .get(field)
-                .and_then(|raw| serde_json::from_str::<Value>(raw.get()).ok());
-            if current_value.as_ref() != Some(override_value) {
-                changed = true;
-            }
+    for (field, override_value) in &policy.body_overrides {
+        let current_value = raw_fields
+            .get(field)
+            .and_then(|raw| serde_json::from_str::<Value>(raw.get()).ok());
+        if current_value.as_ref() != Some(override_value) {
+            changed = true;
         }
     }
     if !changed {
         return Ok(AppliedJsonBody { body });
     }
-    let mut value = serde_json::from_slice::<Value>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
+    let mut value =
+        serde_json::from_slice::<Value>(&body).map_err(|_| RequestPolicyError::InvalidBody)?;
     let object = value
         .as_object_mut()
-        .ok_or_else(|| RequestPolicyError::invalid_body(layer, interface))?;
+        .ok_or(RequestPolicyError::InvalidBody)?;
     for field in ignored_fields {
         object.remove(&field);
     }
-    if layer == RequestPolicyLayer::CodexOauth {
-        for (field, override_value) in &connector_policy(interface).body_overrides {
-            object.insert(field.clone(), override_value.clone());
-        }
+    for (field, override_value) in &policy.body_overrides {
+        object.insert(field.clone(), override_value.clone());
     }
     let body = serde_json::to_vec(&value)
         .map(Bytes::from)
-        .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
+        .map_err(|_| RequestPolicyError::InvalidBody)?;
     Ok(AppliedJsonBody { body })
 }
 
@@ -241,11 +175,11 @@ pub(crate) fn normalize_codex_fingerprints_in_json(
         return Ok(AppliedJsonBody { body });
     }
     let policy = &contract().codex_fingerprint_normalization;
-    let mut value = serde_json::from_slice::<Value>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
-    let object = value.as_object_mut().ok_or_else(|| {
-        RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface)
-    })?;
+    let mut value =
+        serde_json::from_slice::<Value>(&body).map_err(|_| RequestPolicyError::InvalidBody)?;
+    let object = value
+        .as_object_mut()
+        .ok_or(RequestPolicyError::InvalidBody)?;
     let mut changed = false;
     if object
         .get(&policy.client_metadata_body_field)
@@ -261,15 +195,7 @@ pub(crate) fn normalize_codex_fingerprints_in_json(
         .get_mut(&policy.client_metadata_body_field)
         .expect("Codex client_metadata was inserted when missing")
         .as_object_mut()
-        .ok_or_else(|| {
-            RequestPolicyError::field(
-                RequestPolicyLayer::CodexOauth,
-                interface,
-                RequestPolicyLocation::Body,
-                RequestPolicyFailure::UnsupportedValue,
-                &policy.client_metadata_body_field,
-            )
-        })?;
+        .ok_or(RequestPolicyError::UnsupportedBodyValue)?;
     changed |= normalize_codex_client_metadata(client_metadata, metadata);
     let prompt_cache_key_missing = object
         .get(&policy.prompt_cache_key_body_field)
@@ -288,7 +214,7 @@ pub(crate) fn normalize_codex_fingerprints_in_json(
 
     let body = serde_json::to_vec(&value)
         .map(Bytes::from)
-        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
+        .map_err(|_| RequestPolicyError::InvalidBody)?;
     Ok(AppliedJsonBody { body })
 }
 
@@ -297,16 +223,6 @@ pub(crate) fn normalize_codex_fingerprints_in_headers(
     headers: &mut HeaderMap,
     metadata: &CodexRequestMetadata,
 ) {
-    if !matches!(
-        interface,
-        RequestInterface::ResponsesHttp
-            | RequestInterface::ResponsesWebSocket
-            | RequestInterface::StandaloneWebSearch
-            | RequestInterface::ImagesGeneration
-            | RequestInterface::ImagesEdit
-    ) {
-        return;
-    }
     let policy = &contract().codex_fingerprint_normalization;
     for name in &policy.turn_metadata.header_fields {
         let name = HeaderName::from_bytes(name.as_bytes())
@@ -468,8 +384,6 @@ fn serialize_ascii_json(value: &Value) -> Option<String> {
 }
 
 fn field_disposition_for_policy(
-    layer: RequestPolicyLayer,
-    interface: RequestInterface,
     policy: &BodyPolicy,
     field: &str,
     value: Option<&Value>,
@@ -484,35 +398,17 @@ fn field_disposition_for_policy(
         if rule.accepted_values.as_ref().is_some_and(|accepted| {
             value.is_none_or(|value| !accepted.iter().any(|candidate| candidate == value))
         }) {
-            return Err(RequestPolicyError::field(
-                layer,
-                interface,
-                RequestPolicyLocation::Body,
-                RequestPolicyFailure::UnsupportedValue,
-                field,
-            ));
+            return Err(RequestPolicyError::UnsupportedBodyValue);
         }
         return Ok(FieldDisposition::Ignore);
     }
     if contains_sorted(&policy.reject, field) {
-        return Err(RequestPolicyError::field(
-            layer,
-            interface,
-            RequestPolicyLocation::Body,
-            RequestPolicyFailure::UnsupportedField,
-            field,
-        ));
+        return Err(RequestPolicyError::UnsupportedBodyField);
     }
     match policy.unknown {
         UnknownAction::Allow => Ok(FieldDisposition::Allow),
         UnknownAction::Ignore => Ok(FieldDisposition::Ignore),
-        UnknownAction::Reject => Err(RequestPolicyError::field(
-            layer,
-            interface,
-            RequestPolicyLocation::Body,
-            RequestPolicyFailure::UnsupportedField,
-            field,
-        )),
+        UnknownAction::Reject => Err(RequestPolicyError::UnsupportedBodyField),
     }
 }
 
@@ -634,9 +530,6 @@ fn contract() -> &'static Contract {
 fn connector_policy(i: RequestInterface) -> &'static ConnectorPolicy {
     &contract().interfaces[i.as_str()].codex_oauth
 }
-fn body_policy(_: RequestPolicyLayer, i: RequestInterface) -> &'static BodyPolicy {
-    &connector_policy(i).body
-}
 fn contains_sorted(v: &[String], s: &str) -> bool {
     v.binary_search_by(|v| v.as_str().cmp(s)).is_ok()
 }
@@ -651,15 +544,7 @@ pub(crate) fn filter_codex_headers(
                 out.append(name.clone(), value.clone());
             }
             UnknownAction::Ignore => {}
-            UnknownAction::Reject => {
-                return Err(RequestPolicyError::field(
-                    RequestPolicyLayer::CodexOauth,
-                    i,
-                    RequestPolicyLocation::Header,
-                    RequestPolicyFailure::UnsupportedField,
-                    name.as_str(),
-                ));
-            }
+            UnknownAction::Reject => return Err(RequestPolicyError::UnsupportedHeader),
         }
     }
     Ok(out)
@@ -672,9 +557,7 @@ pub(crate) fn check_image_edit_fields(fields: &[Value]) -> Result<(), PluginCall
         let value = field["value"].as_str().unwrap_or("");
         let parsed = Value::String(value.into());
         field_disposition_for_policy(
-            RequestPolicyLayer::CodexOauth,
-            RequestInterface::ImagesEdit,
-            body_policy(RequestPolicyLayer::CodexOauth, RequestInterface::ImagesEdit),
+            &connector_policy(RequestInterface::ImagesEdit).body,
             name,
             Some(&parsed),
         )?;
@@ -868,7 +751,6 @@ mod tests {
     fn generation_gif_controls_are_optional_bounded_integer_siblings() {
         let apply = |body: Value| {
             apply_json_body_policy(
-                RequestPolicyLayer::CodexOauth,
                 RequestInterface::ImagesGeneration,
                 Bytes::from(serde_json::to_vec(&body).unwrap()),
             )
@@ -906,7 +788,6 @@ mod tests {
     #[test]
     fn codex_json_policy_uses_explicit_ignore_reject_and_override_rules() {
         let applied = apply_json_body_policy(
-            RequestPolicyLayer::CodexOauth,
             RequestInterface::ImagesGeneration,
             Bytes::from_static(
                 br#"{"model":"gpt-image-2","prompt":"x","output_format":"png","moderation":"auto","user":"u"}"#,
@@ -917,7 +798,6 @@ mod tests {
         assert_eq!(value, json!({"model":"gpt-image-2","prompt":"x"}));
 
         let error = apply_json_body_policy(
-            RequestPolicyLayer::CodexOauth,
             RequestInterface::ImagesGeneration,
             Bytes::from_static(br#"{"model":"gpt-image-2","prompt":"x","output_format":"jpeg"}"#),
         )
@@ -925,7 +805,6 @@ mod tests {
         assert_eq!(error.code(), "codex_request_body_field_value_unsupported");
 
         let applied = apply_json_body_policy(
-            RequestPolicyLayer::CodexOauth,
             RequestInterface::ResponsesHttp,
             Bytes::from_static(
                 br#"{"model":"gpt-5-codex","input":[],"max_output_tokens":1,"stream":true,"store":true}"#,
@@ -938,7 +817,6 @@ mod tests {
         assert_eq!(value["store"], false);
 
         let error = apply_json_body_policy(
-            RequestPolicyLayer::CodexOauth,
             RequestInterface::ResponsesHttp,
             Bytes::from_static(
                 br#"{"model":"gpt-5-codex","input":[],"stream":true,"previous_response_id":"resp_1"}"#,
@@ -948,7 +826,6 @@ mod tests {
         assert_eq!(error.code(), "codex_request_body_field_value_unsupported");
 
         let error = apply_json_body_policy(
-            RequestPolicyLayer::CodexOauth,
             RequestInterface::ResponsesHttp,
             Bytes::from_static(
                 br#"{"model":"gpt-5-codex","input":[],"stream":true,"future_field":true}"#,

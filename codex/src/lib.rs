@@ -168,18 +168,18 @@ mod tests {
         ] {
             assert!(!adapted.to_string().contains(private));
         }
-        for operation in [
-            "responses",
-            "responses-ws",
-            "web_search",
-            "images_generation",
-            "images_edit",
+        for (operation, protocol) in [
+            ("responses", "sse"),
+            ("responses-ws", "websocket"),
+            ("web_search", "non_stream"),
+            ("images_generation", "non_stream"),
+            ("images_edit", "non_stream"),
         ] {
             let result = dispatch(
                 "attempt.headers",
                 configured(json!({
                     "operation":operation,
-                    "protocol":if operation=="responses-ws" {"websocket"} else {"non_stream"},
+                    "protocol":protocol,
                     "request_context":context,"access_token":"selected-token",
                     "headers":{"x-codex-turn-metadata":raw_turn,"x-private-transform":"discard"}
                 })),

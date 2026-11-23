@@ -4,9 +4,11 @@
 import copy
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -38,7 +40,7 @@ class GlibcBaselineTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=version_info):
                 PACKAGE.verify_glibc_requirements(version_info)
 
-    def test_command_protocol_rejects_old_gateways_and_partial_settings(self):
+    def test_command_protocol_rejects_incomplete_gateway_contracts(self):
         manifest = {
             "id": "codex", "version": "0.2.0", "protocol_version": 3,
             "operations": list(PACKAGE.OPERATION_PROTOCOLS),
@@ -46,6 +48,12 @@ class GlibcBaselineTests(unittest.TestCase):
                 "attempt.context", "settings.describe/v1",
                 "settings.validate/v1", "settings.compile/v1",
                 "attempt.describe/v1", "attempt.capabilities",
+                "attempt.body", "attempt.target", "attempt.headers",
+                "attempt.image_edit_plan", "attempt.image_part_plan",
+                "endpoints", "authorize_url", "parse_callback", "parse_identity", "parse_expiration",
+                "exchange_plan", "exchange_parse", "refresh_plan", "refresh_parse",
+                "models_plan", "models_parse", "quota_plan", "quota_parse",
+                "quota_reset_plan", "quota_reset_parse",
             ],
         }
         PACKAGE.verify_manifest(manifest, "0.2.0")
@@ -53,7 +61,7 @@ class GlibcBaselineTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 PACKAGE.verify_manifest({**manifest, "protocol_version": protocol}, "0.2.0")
         for command in manifest["commands"]:
-            with self.assertRaises(ValueError):
+            with self.subTest(missing=command), self.assertRaisesRegex(ValueError, command):
                 PACKAGE.verify_manifest({
                     **manifest,
                     "commands": [value for value in manifest["commands"] if value != command],
@@ -99,11 +107,87 @@ class GlibcBaselineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PACKAGE.verify_attempt_descriptor("unknown", descriptor)
 
-    def test_packaging_honors_cargo_target_directory(self):
-        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/private/build/target"}):
-            self.assertEqual(PACKAGE.cargo_target_directory(), Path("/private/build/target"))
-        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "local-target"}):
-            self.assertEqual(PACKAGE.cargo_target_directory(), PACKAGE.ROOT / "local-target")
+    def test_build_uses_only_cdylib_reported_for_selected_package(self):
+        target = "x86_64-unknown-linux-gnu"
+        with tempfile.TemporaryDirectory() as tmp, patch.object(PACKAGE, "ROOT", Path(tmp)):
+            stale = Path(tmp, "target", target, "release", PACKAGE.LIBRARY)
+            stale.parent.mkdir(parents=True)
+            stale.touch()
+            selected = Path(tmp, "configured-build-dir", target, "release", PACKAGE.LIBRARY)
+            artifact = {"reason": "compiler-artifact", "package_id": "codex-id",
+                        "target": {"crate_types": ["cdylib", "rlib"]},
+                        "filenames": [str(selected), str(selected.with_suffix(".rlib"))]}
+            others = [{**artifact, "package_id": "dependency", "filenames": [str(stale)]},
+                      {**artifact, "target": {"crate_types": ["rlib"]}},
+                      {"reason": "build-finished", "success": True}]
+            for matches in ([], [artifact], [artifact, artifact]):
+                messages = "\n".join(map(json.dumps, others + matches))
+                result = subprocess.CompletedProcess([], 0, stdout=messages)
+                with self.subTest(count=len(matches)), patch.object(subprocess, "run", return_value=result) as run:
+                    if len(matches) == 1:
+                        self.assertEqual(PACKAGE.build_library(target, "codex-id"), selected)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "exactly one Codex cdylib"):
+                            PACKAGE.build_library(target, "codex-id")
+                    self.assertEqual(run.call_args.args[0], ["cargo", "build", "--locked", "--release", "--package",
+                                     "ai-gateway-connector-codex", "--lib", "--target", target, "--message-format=json"])
+
+
+class SourceProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        root_patch = patch.object(PACKAGE, "ROOT", self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+        self.git("init", "-q")
+        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.3"\n')
+        self.sdk = "git+https://example.invalid/sdk?rev=" + "1" * 40 + "#" + "1" * 40
+        (self.root / "Cargo.lock").write_text(
+            f'[[package]]\nname = "ai-gateway-connector-sdk"\nsource = "{self.sdk}"\n')
+        self.git("add", "Cargo.toml", "Cargo.lock")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "fixture version")
+        self.head = self.git("rev-parse", "HEAD")
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
+
+    def test_release_uses_clean_commit_dev_does_not_claim_it(self):
+        self.assertEqual(PACKAGE.source_revision(False), self.head)
+        untracked = self.root / "new.rs"
+        untracked.touch()
+        with self.assertRaisesRegex(ValueError, "clean checkout"):
+            PACKAGE.source_revision(False)
+        untracked.unlink()
+        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.4"\n')
+        with self.assertRaisesRegex(ValueError, "clean checkout"):
+            PACKAGE.source_revision(False)
+        self.git("add", "Cargo.toml")
+        with self.assertRaisesRegex(ValueError, "clean checkout"):
+            PACKAGE.source_revision(False)
+        self.assertEqual(PACKAGE.source_revision(True), "uncommitted")
+
+    def test_verification_checks_version_and_locked_sdk_at_recorded_commit(self):
+        info = {"source_repository": PACKAGE.SOURCE_REPOSITORY, "source_revision": self.head,
+                "connector_version": "1.2.3", "sdk_source": self.sdk}
+        PACKAGE.verify_provenance(info, False)
+        (self.root / "Cargo.lock").write_text("version = 4\n")
+        PACKAGE.verify_provenance(info, False)
+        for source in (self.sdk.replace("1", "2"), "development-path", None):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "SDK source"):
+                PACKAGE.verify_provenance({**info, "sdk_source": source}, False)
+        with self.assertRaisesRegex(ValueError, "version"):
+            PACKAGE.verify_provenance({**info, "connector_version": "1.2.4"}, False)
+        with self.assertRaisesRegex(ValueError, "not a commit"):
+            PACKAGE.verify_provenance({**info, "source_revision": self.git("rev-parse", "HEAD^{tree}")}, False)
+        with self.assertRaisesRegex(ValueError, "source repository"):
+            PACKAGE.verify_provenance({**info, "source_repository": "other"}, False)
+        for revision in (self.head[:7], "uncommitted", None):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "full source commit"):
+                PACKAGE.verify_provenance({**info, "source_revision": revision}, False)
+        PACKAGE.verify_provenance({**info, "source_revision": "uncommitted"}, True)
 
 
 class ArchiveExtractionTests(unittest.TestCase):

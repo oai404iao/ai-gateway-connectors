@@ -36,8 +36,8 @@ impl Settings {
 fn valid_header(value: &str, maximum: usize) -> bool {
     !value.is_empty()
         && value.trim() == value
-        && value.chars().count() <= maximum
-        && http::HeaderValue::from_str(value).is_ok()
+        && value.len() <= maximum
+        && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
 }
 
 fn validate(values: &Value) -> Vec<Value> {
@@ -197,6 +197,31 @@ mod tests {
         assert_eq!(out.metadata["config"]["client_version"], "9.8.7");
         assert_eq!(defaults["client_version"], "0.146.0");
         assert!(Settings::from_metadata(&json!({})).is_err());
+    }
+
+    #[test]
+    fn identity_headers_require_visible_ascii_and_report_the_invalid_field() {
+        for key in ["originator", "client_version", "user_agent"] {
+            let mut values = serde_json::to_value(Settings::default()).unwrap();
+            values[key] = json!("codex café/1.0");
+            assert_eq!(
+                validate(&values),
+                vec![json!({"field":key,"code":"invalid_header"})],
+                "{key}"
+            );
+            assert!(
+                dispatch(
+                    "settings.compile/v1",
+                    json!({"schema_version":1,"values":values})
+                )
+                .is_err(),
+                "{key}"
+            );
+        }
+
+        let mut values = serde_json::to_value(Settings::default()).unwrap();
+        values["user_agent"] = json!("codex/1.0 (Linux; x86_64)");
+        assert!(validate(&values).is_empty());
     }
 
     #[test]

@@ -5,6 +5,16 @@ For the current source contract, see [Codex compatibility](docs/codex.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject OAuth refresh responses that provide no nonempty token while continuing to accept valid partial updates.
+- Reject identity header settings that cannot be used in maintenance requests, reporting the offending field before activation.
+- Validate body and header preparation against the same operation/transport pairs advertised by the protocol-3 descriptor.
+
+### Changed
+
+- Package verification checks the command surface required by the gateway. Development builds and clean release sources are distinguished in package provenance.
+
 ## [0.2.1] - 2026-11-20
 
 ### Changed

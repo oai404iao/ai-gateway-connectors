@@ -303,16 +303,16 @@ fn parse_refresh(status: StatusCode, body: &[u8]) -> Result<RefreshedTokens, Cod
     }
     let response: RefreshResponse =
         serde_json::from_slice(body).map_err(|_| CodexConnectorError::InvalidTokenResponse)?;
-    if response.id_token.is_none()
-        && response.access_token.is_none()
-        && response.refresh_token.is_none()
-    {
+    let id_token = response.id_token.filter(|value| !value.is_empty());
+    let access_token = response.access_token.filter(|value| !value.is_empty());
+    let refresh_token = response.refresh_token.filter(|value| !value.is_empty());
+    if id_token.is_none() && access_token.is_none() && refresh_token.is_none() {
         return Err(CodexConnectorError::InvalidTokenResponse);
     }
     Ok(RefreshedTokens {
-        id_token: response.id_token.filter(|value| !value.is_empty()),
-        access_token: response.access_token.filter(|value| !value.is_empty()),
-        refresh_token: response.refresh_token.filter(|value| !value.is_empty()),
+        id_token,
+        access_token,
+        refresh_token,
     })
 }
 fn parse_models(status: StatusCode, body: &[u8]) -> Result<Vec<String>, CodexConnectorError> {
@@ -788,6 +788,39 @@ mod tests {
         format!("{header}.{payload}.signature")
     }
     #[test]
+    fn compiled_identity_settings_drive_maintenance_model_request_headers() {
+        let mut values = serde_json::to_value(crate::settings::Settings::default()).unwrap();
+        values["originator"] = json!("gateway-visible");
+        values["client_version"] = json!("9.9.1");
+        values["user_agent"] = json!("gateway/9.9.1 (Linux; x86_64)");
+        let compiled = crate::settings::dispatch(
+            "settings.compile/v1",
+            json!({"schema_version":1,"values":values}),
+        )
+        .unwrap()
+        .metadata["config"]
+            .clone();
+        let endpoints = CodexEndpoints::default();
+        let plan = process(
+            "models_plan",
+            json!({
+                "endpoints":endpoints,
+                "settings":compiled,
+                "access_token":"access-token",
+                "account_id":null,
+                "is_fedramp":false
+            }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(plan.metadata["headers"]["originator"], "gateway-visible");
+        assert_eq!(
+            plan.metadata["headers"]["user-agent"],
+            "gateway/9.9.1 (Linux; x86_64)"
+        );
+    }
+
+    #[test]
     fn derives_codex_models_and_quota_endpoints_without_url_join_truncation() {
         let endpoints = CodexEndpoints::default();
         let identity = configured_identity();
@@ -1039,8 +1072,20 @@ mod tests {
             .is_err()
         );
         assert!(parse_refresh(StatusCode::OK, b"{}").is_err());
-        let refreshed =
-            parse_refresh(StatusCode::OK, br#"{"refresh_token":"replacement"}"#).unwrap();
+        assert!(parse_refresh(StatusCode::OK, br#"{"access_token":""}"#).is_err());
+        assert!(
+            parse_refresh(
+                StatusCode::OK,
+                br#"{"id_token":"","access_token":"","refresh_token":""}"#
+            )
+            .is_err()
+        );
+        let refreshed = parse_refresh(
+            StatusCode::OK,
+            br#"{"access_token":"","refresh_token":"replacement"}"#,
+        )
+        .unwrap();
+        assert_eq!(refreshed.access_token, None);
         assert_eq!(refreshed.refresh_token.as_deref(), Some("replacement"));
         assert!(matches!(
             parse_refresh(StatusCode::UNAUTHORIZED, b"secret"),

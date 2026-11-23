@@ -59,23 +59,26 @@ to validate prose.
 With the current workspace version and dated changelog entry:
 
 ```sh
-./scripts/package-release.sh 0.2.1
+./scripts/package-release.sh 0.2.1 --development
 ```
 
-This builds the native release target, reads the real library's exported ABI
-descriptor, packages it, and verifies the result. For the combined formatting,
+The packager runs a locked native release build and takes the connector library
+from Cargo's compiler-artifact output, including when Cargo uses a custom target
+directory. It reads the exported descriptor and verifies the archive. For the combined formatting,
 Clippy, Rust tests, Python package tests, build, and archive gate, use:
 
 ```sh
-./scripts/verify-release.sh 0.2.1
+./scripts/verify-release.sh 0.2.1 --development
 ```
 
-These commands are local checks, not publication. Packaging honors
-`CARGO_TARGET_DIR`, including isolated build directories.
+`--development` allows pre-commit checks, records `source_revision: "uncommitted"`,
+and writes to `development-package/` under the Cargo target directory. These
+archives are not release candidates. Omit the flag on a clean release commit
+to produce a [release archive](releasing.md).
 
 ## Archive contents
 
-The default output directory is `target/release-package/`, or
+The release output directory is `target/release-package/`, or
 `$CARGO_TARGET_DIR/release-package/` when overridden. Each architecture produces
 `ai-gateway-connector-codex-VERSION-TARGET.tar.gz` and a matching `.sha256` file.
 

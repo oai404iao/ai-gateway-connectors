@@ -2,7 +2,7 @@
 
 use crate::{
     identity::RequestIdentity,
-    request_policy::{self, RequestInterface, RequestPolicyLayer},
+    request_policy::{self, RequestInterface},
     settings::Settings,
 };
 use ai_gateway_connector_sdk::{PluginCallError, PluginOutput};
@@ -18,13 +18,50 @@ fn string<'a>(value: &'a Value, name: &str) -> Result<&'a str, PluginCallError> 
         .ok_or_else(|| error("invalid_request_body"))
 }
 
-fn capabilities(operation: &str) -> Value {
-    let responses = matches!(operation, "responses" | "responses-ws");
-    json!({
-        "preserves_affinity_on_failure": responses || operation == "web_search",
-        "successful_response_is_sse": responses,
-        "changes_request_body": responses || matches!(operation, "images_generation" | "images_edit")
-    })
+impl RequestInterface {
+    fn for_operation(m: &Value) -> Result<Self, PluginCallError> {
+        match string(m, "operation")? {
+            "responses" => Ok(Self::ResponsesHttp),
+            "responses-ws" => Ok(Self::ResponsesWebSocket),
+            "web_search" => Ok(Self::StandaloneWebSearch),
+            "images_generation" => Ok(Self::ImagesGeneration),
+            "images_edit" => Ok(Self::ImagesEdit),
+            _ => Err(error("unsupported_operation")),
+        }
+    }
+
+    fn protocol(self) -> &'static str {
+        match self {
+            Self::ResponsesHttp => "sse",
+            Self::ResponsesWebSocket => "websocket",
+            Self::StandaloneWebSearch | Self::ImagesGeneration | Self::ImagesEdit => "non_stream",
+        }
+    }
+
+    fn for_request(m: &Value) -> Result<Self, PluginCallError> {
+        let protocol = string(m, "protocol")?;
+        let interface = Self::for_operation(m)?;
+        if protocol != interface.protocol() {
+            return Err(error(match interface {
+                Self::ResponsesHttp | Self::ResponsesWebSocket if protocol == "non_stream" => {
+                    "streaming_required"
+                }
+                Self::StandaloneWebSearch => "search_streaming_unsupported",
+                Self::ImagesGeneration => "image_streaming_unsupported",
+                _ => "invalid_request_body",
+            }));
+        }
+        Ok(interface)
+    }
+
+    fn capabilities(self) -> Value {
+        let responses = matches!(self, Self::ResponsesHttp | Self::ResponsesWebSocket);
+        json!({
+            "preserves_affinity_on_failure": responses || self == Self::StandaloneWebSearch,
+            "successful_response_is_sse": responses,
+            "changes_request_body": self != Self::StandaloneWebSearch
+        })
+    }
 }
 
 pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, PluginCallError> {
@@ -38,26 +75,13 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
                 .map_err(|_| error("invalid_request_context"))?
         }
         "attempt.body" => {
-            let protocol = string(&m, "protocol")?;
-            match string(&m, "operation")? {
-                "responses" | "responses-ws" if protocol == "non_stream" => {
-                    return Err(error("streaming_required"));
-                }
-                "images_generation" if protocol != "non_stream" => {
-                    return Err(error("image_streaming_unsupported"));
-                }
-                "web_search" if protocol != "non_stream" => {
-                    return Err(error("search_streaming_unsupported"));
-                }
-                "images_edit" => return Err(error("invalid_request_body")),
-                "responses" | "responses-ws" | "images_generation" | "web_search" => {}
-                _ => return Err(error("unsupported_operation")),
+            let interface = RequestInterface::for_request(&m)?;
+            if interface == RequestInterface::ImagesEdit {
+                return Err(error("invalid_request_body"));
             }
-            let interface = RequestInterface::from_metadata(&m)?;
             let identity = RequestIdentity::from_metadata(&m)?;
             let settings = Settings::from_metadata(&m)?;
             let filtered = request_policy::apply_json_body_policy(
-                RequestPolicyLayer::CodexOauth,
                 interface,
                 bytes::Bytes::copy_from_slice(body),
             )?;
@@ -70,12 +94,13 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
             .to_vec();
         }
         "attempt.target" => {
-            let path = match string(&m, "operation")? {
-                "responses" | "responses-ws" => "responses",
-                "web_search" => "alpha/search",
-                "images_generation" => "images/generations",
-                "images_edit" => "images/edits",
-                _ => return Err(error("unsupported_operation")),
+            let path = match RequestInterface::for_operation(&m)? {
+                RequestInterface::ResponsesHttp | RequestInterface::ResponsesWebSocket => {
+                    "responses"
+                }
+                RequestInterface::StandaloneWebSearch => "alpha/search",
+                RequestInterface::ImagesGeneration => "images/generations",
+                RequestInterface::ImagesEdit => "images/edits",
             };
             let base = string(&m, "base_url")?.trim_end_matches('/');
             let query = m["query"]
@@ -88,22 +113,16 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
         }
         "attempt.headers" => output.metadata = headers(&m)?,
         "attempt.capabilities" => {
-            output.metadata = capabilities(string(&m, "operation")?);
+            output.metadata = RequestInterface::for_operation(&m)?.capabilities();
         }
         "attempt.describe/v1" => {
             if !body.is_empty() {
                 return Err(error("invalid_request_body"));
             }
-            let operation = string(&m, "operation")?;
-            let protocol = match operation {
-                "responses" => "sse",
-                "responses-ws" => "websocket",
-                "web_search" | "images_generation" | "images_edit" => "non_stream",
-                _ => return Err(error("unsupported_operation")),
-            };
+            let interface = RequestInterface::for_operation(&m)?;
             output.metadata = json!({
-                "capabilities": capabilities(operation),
-                "protocols":[{"protocol":protocol,"response":"passthrough"}],
+                "capabilities": interface.capabilities(),
+                "protocols":[{"protocol":interface.protocol(),"response":"passthrough"}],
                 "usage":{"parser":"general","format":"open_ai_responses"}
             });
         }
@@ -156,7 +175,7 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
 fn headers(m: &Value) -> Result<Value, PluginCallError> {
     let identity = RequestIdentity::from_metadata(m)?;
     let settings = Settings::from_metadata(m)?;
-    let interface = RequestInterface::from_metadata(m)?;
+    let interface = RequestInterface::for_request(m)?;
     let mut original = http::HeaderMap::new();
     for (name, value) in m["headers"]
         .as_object()
@@ -189,7 +208,6 @@ fn headers(m: &Value) -> Result<Value, PluginCallError> {
             .collect::<std::collections::BTreeMap<_, _>>()
     );
     let m = &context;
-    let operation = string(m, "operation")?;
     let mut set = Map::new();
     let mut remove = original
         .keys()
@@ -234,9 +252,9 @@ fn headers(m: &Value) -> Result<Value, PluginCallError> {
     if m["headers"]["x-client-request-id"].is_null() {
         set.insert("x-client-request-id".into(), json!(identity.thread_id));
     }
-    match operation {
-        "responses" | "responses-ws" => {
-            if m["protocol"] == "websocket" {
+    match interface {
+        RequestInterface::ResponsesHttp | RequestInterface::ResponsesWebSocket => {
+            if interface == RequestInterface::ResponsesWebSocket {
                 remove.extend([
                     "accept",
                     "accept-encoding",
@@ -249,7 +267,7 @@ fn headers(m: &Value) -> Result<Value, PluginCallError> {
             }
             remove.push("x-codex-image-turn-id");
         }
-        "images_generation" | "images_edit" => {
+        RequestInterface::ImagesGeneration | RequestInterface::ImagesEdit => {
             set.insert("accept".into(), json!("application/json"));
             set.insert("content-type".into(), json!("application/json"));
             let turn = m["headers"]["x-codex-image-turn-id"]
@@ -259,12 +277,11 @@ fn headers(m: &Value) -> Result<Value, PluginCallError> {
                 .unwrap_or(&identity.turn_id);
             set.insert("x-codex-image-turn-id".into(), json!(turn));
         }
-        "web_search" => {
+        RequestInterface::StandaloneWebSearch => {
             set.insert("accept".into(), json!("application/json"));
             set.insert("content-type".into(), json!("application/json"));
             remove.push("x-codex-image-turn-id");
         }
-        _ => return Err(error("unsupported_operation")),
     }
     for (name, value) in &set {
         http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| error("invalid_credentials"))?;
@@ -351,15 +368,17 @@ fn image_edit_plan(m: &Value) -> Result<Value, PluginCallError> {
 mod tests {
     use super::*;
 
+    const OPERATIONS: [(&str, &str); 5] = [
+        ("responses", "sse"),
+        ("responses-ws", "websocket"),
+        ("web_search", "non_stream"),
+        ("images_generation", "non_stream"),
+        ("images_edit", "non_stream"),
+    ];
+
     #[test]
     fn descriptors_are_bounded_and_reuse_general_for_actual_upstream_usage() {
-        for (operation, protocol) in [
-            ("responses", "sse"),
-            ("responses-ws", "websocket"),
-            ("web_search", "non_stream"),
-            ("images_generation", "non_stream"),
-            ("images_edit", "non_stream"),
-        ] {
+        for (operation, protocol) in OPERATIONS {
             let metadata = json!({"operation":operation});
             let descriptor = dispatch("attempt.describe/v1", metadata.clone(), &[]).unwrap();
             let legacy = dispatch("attempt.capabilities", metadata, &[]).unwrap();
@@ -415,14 +434,8 @@ mod tests {
 
     #[test]
     fn header_plans_preserve_provider_auth_identity_and_transport_rules() {
-        for operation in [
-            "responses",
-            "responses-ws",
-            "web_search",
-            "images_generation",
-            "images_edit",
-        ] {
-            let mut metadata = header_context(operation, "sse");
+        for (operation, protocol) in OPERATIONS {
+            let mut metadata = header_context(operation, protocol);
             let result = headers(&metadata).unwrap();
             assert_eq!(result["set"]["authorization"], "Bearer access-token");
             assert_eq!(result["set"]["chatgpt-account-id"], "account-123");
@@ -483,6 +496,30 @@ mod tests {
         let mut invalid = header_context("responses", "sse");
         invalid["access_token"] = json!("token\r\ninjected:true");
         assert!(headers(&invalid).is_err());
+    }
+
+    #[test]
+    fn body_and_header_plans_reject_undeclared_transports() {
+        for (operation, protocol, code) in [
+            ("responses", "websocket", "invalid_request_body"),
+            ("responses-ws", "sse", "invalid_request_body"),
+            ("responses", "non_stream", "streaming_required"),
+            ("web_search", "sse", "search_streaming_unsupported"),
+            ("images_generation", "sse", "image_streaming_unsupported"),
+            ("images_edit", "websocket", "invalid_request_body"),
+        ] {
+            let metadata = header_context(operation, protocol);
+            for (command, body) in [
+                ("attempt.body", b"{}".as_slice()),
+                ("attempt.headers", &[][..]),
+            ] {
+                assert_eq!(
+                    dispatch(command, metadata.clone(), body).unwrap_err().code,
+                    code,
+                    "{command} {operation}/{protocol}"
+                );
+            }
+        }
     }
 
     #[test]
