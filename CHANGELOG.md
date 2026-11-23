@@ -13,6 +13,7 @@ For the current source contract, see [Codex compatibility](docs/codex.md).
 
 ### Changed
 
+- **Host contract:** operation capabilities are returned by `attempt.describe/v1`, not a separate `attempt.capabilities` command. `endpoints` returns the issuer and Responses base URL only; OAuth plans still use the loopback callback. Settings accept schema 1 and do not declare a migration command. Use this build with a gateway that consumes these contracts.
 - Package verification checks the command surface required by the gateway. Development builds and clean release sources are distinguished in package provenance.
 
 ## [0.2.1] - 2026-11-20

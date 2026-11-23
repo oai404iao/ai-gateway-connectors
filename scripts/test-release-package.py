@@ -41,13 +41,14 @@ class GlibcBaselineTests(unittest.TestCase):
                 PACKAGE.verify_glibc_requirements(version_info)
 
     def test_command_protocol_rejects_incomplete_gateway_contracts(self):
+        version = "1.2.3"
         manifest = {
-            "id": "codex", "version": "0.2.0", "protocol_version": 3,
+            "id": "codex", "version": version, "protocol_version": 3,
             "operations": list(PACKAGE.OPERATION_PROTOCOLS),
             "commands": [
                 "attempt.context", "settings.describe/v1",
                 "settings.validate/v1", "settings.compile/v1",
-                "attempt.describe/v1", "attempt.capabilities",
+                "attempt.describe/v1",
                 "attempt.body", "attempt.target", "attempt.headers",
                 "attempt.image_edit_plan", "attempt.image_part_plan",
                 "endpoints", "authorize_url", "parse_callback", "parse_identity", "parse_expiration",
@@ -56,25 +57,23 @@ class GlibcBaselineTests(unittest.TestCase):
                 "quota_reset_plan", "quota_reset_parse",
             ],
         }
-        PACKAGE.verify_manifest(manifest, "0.2.0")
+        PACKAGE.verify_manifest(manifest, version)
         for protocol in (None, 1, 2, 4):
             with self.assertRaises(ValueError):
-                PACKAGE.verify_manifest({**manifest, "protocol_version": protocol}, "0.2.0")
+                PACKAGE.verify_manifest({**manifest, "protocol_version": protocol}, version)
         for command in manifest["commands"]:
             with self.subTest(missing=command), self.assertRaisesRegex(ValueError, command):
                 PACKAGE.verify_manifest({
                     **manifest,
                     "commands": [value for value in manifest["commands"] if value != command],
-                }, "0.2.0")
+                }, version)
         for command in ["response.json/v1", "response.event/v1"]:
             with self.assertRaises(ValueError):
                 PACKAGE.verify_manifest({
                     **manifest, "commands": [*manifest["commands"], command],
-                }, "0.2.0")
+                }, version)
         with self.assertRaises(ValueError):
-            PACKAGE.verify_manifest({**manifest, "operations": ["responses"]}, "0.2.0")
-        with self.assertRaises(ValueError):
-            PACKAGE.verify_manifest({**manifest, "commands": ["attempt.context"]}, "0.2.0")
+            PACKAGE.verify_manifest({**manifest, "operations": ["responses"]}, version)
 
     def test_attempt_descriptor_requires_typed_passthrough_and_actual_upstream_usage(self):
         descriptor = {

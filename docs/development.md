@@ -1,97 +1,31 @@
-# Development
+# Develop the Codex connector
 
-This repository is a Rust workspace with one provider crate, `codex`. The plugin
-is a `cdylib`; it is not a standalone server. Development and package checks do
-not need provider credentials or paid upstream requests.
+Run commands from the repository root. The `codex` crate builds `libai_gateway_connector_codex.so`; it has no server process.
 
 ## Prerequisites
 
-- The Rust 1.97.1 toolchain with `rustfmt` and Clippy, as pinned in
-  `rust-toolchain.toml`.
-- Git access to the pinned connector SDK dependency.
-- For native packaging: an x86_64 or aarch64 GNU Linux host, a C toolchain,
-  Python 3.11 or newer, and `readelf` from binutils.
+Use the toolchain in `rust-toolchain.toml` with rustfmt and Clippy, and the SDK Git revision in the Cargo manifest and lockfile. Native packaging also needs a C toolchain, Python 3.11+, Git and `readelf` (binutils). Use a supported GNU Linux host; the [release gate](releasing.md) checks the library's actual glibc requirements, not just its build target.
 
-Official artifacts are built in the digest-pinned bookworm container specified
-in CI. A newer local libc can produce a library rejected by the package gate;
-building successfully is not sufficient to establish release compatibility.
+## Source and tests
 
-Run the commands below from the repository root.
-
-## Source layout
-
-| Path | Responsibility |
+| File under `codex/src/` | Responsibility |
 | --- | --- |
-| `codex/src/lib.rs` | Exported manifest and command dispatch |
-| `codex/src/attempt.rs` | Operation descriptors and request adaptation plans |
-| `codex/src/protocol.rs` | OAuth, model, and quota protocol planning/parsing |
-| `codex/src/settings.rs` | Settings descriptor, defaults, validation, and compilation |
-| `codex/src/identity.rs` | Credential-stable installation identity and request context |
-| `codex/src/request_policy.rs` | Outbound filtering and privacy normalization |
-| `codex/src/request-allowlists.json` | Embedded provider request policy |
-| `scripts/` | Version checks, native packaging, and package-verifier tests |
-| `.github/workflows/` | Two-architecture CI and tag publication |
+| `lib.rs`, `attempt.rs` | Native manifest, dispatch, operation descriptors, request plans |
+| `protocol.rs` | OAuth, models, quota plans and response parsing |
+| `settings.rs`, `identity.rs` | Settings, credential-scoped installation IDs and request context |
+| `request_policy.rs`, `request-allowlists.json` | Provider field and header filtering; privacy substitutions |
 
-Keep provider-specific behavior here. Transport execution, durable credentials,
-routing, usage storage, billing, and logging belong in the gateway. See
-[Codex compatibility](codex.md) before changing commands or metadata contracts.
-
-## Run checks
+Run the local checks without provider credentials:
 
 ```sh
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 python3 scripts/test-release-package.py
-bash -n scripts/*.sh
 ```
 
-Rust tests are colocated with the implementation. Python tests cover archive
-validation and package metadata. Do not use production credentials to run these
-checks.
-
-For documentation-only edits, check links, command definitions, and consistency
-with the implementation; no upstream request or native build is needed solely
-to validate prose.
-
-## Build a release archive locally
-
-With the current workspace version and dated changelog entry:
-
-```sh
-./scripts/package-release.sh 0.2.1 --development
-```
-
-The packager runs a locked native release build and takes the connector library
-from Cargo's compiler-artifact output, including when Cargo uses a custom target
-directory. It reads the exported descriptor and verifies the archive. For the combined formatting,
-Clippy, Rust tests, Python package tests, build, and archive gate, use:
-
-```sh
-./scripts/verify-release.sh 0.2.1 --development
-```
-
-`--development` allows pre-commit checks, records `source_revision: "uncommitted"`,
-and writes to `development-package/` under the Cargo target directory. These
-archives are not release candidates. Omit the flag on a clean release commit
-to produce a [release archive](releasing.md).
+For a native development archive, run `./scripts/verify-release.sh VERSION --development` with the workspace version. It includes the checks above, builds the locked release target and selects the cdylib reported by Cargo. The archive is written under `development-package/` in the configured Cargo target directory with `source_revision: "uncommitted"`.
 
 ## Archive contents
 
-The release output directory is `target/release-package/`, or
-`$CARGO_TARGET_DIR/release-package/` when overridden. Each architecture produces
-`ai-gateway-connector-codex-VERSION-TARGET.tar.gz` and a matching `.sha256` file.
-
-Each archive has a single package directory containing:
-
-- `libai_gateway_connector_codex.so` and its exported `manifest.json`.
-- `build-info.json`: build-info schema, connector version and ABI, target, glibc
-  baseline, library digest, source repository/revision, and SDK source.
-- `SHA256SUMS` covering all other package files.
-- `README.md`, `CHANGELOG.md`, and `docs/`.
-- `LICENSE`, `THIRD_PARTY_NOTICES.md`, and dependency license texts in `LICENSES/`.
-
-Verification checks the full checksum set, ELF architecture, glibc requirements,
-native ABI/manifest, pure operation descriptors, and required license materials.
-It loads the library to inspect it; only verify trusted native artifacts in this
-way. For publication requirements, see [release maintenance](releasing.md).
+Each `.tar.gz` contains the `.so`, exported `manifest.json`, `build-info.json`, per-file `SHA256SUMS`, documentation, project license and third-party notices and licenses. `build-info.json` identifies the target, ABI, connector version, glibc baseline, library digest, source and SDK. A companion `.sha256` covers the archive. Native verification loads the library and calls its operation descriptors; only run it on trusted artifacts.

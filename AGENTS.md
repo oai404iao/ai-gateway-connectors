@@ -1,63 +1,9 @@
-# Repository guidance
+# Working on the native Codex connector
 
-This is the native connector workspace for ai-gateway, currently containing the
-`codex` provider. It is not the gateway application. Keep its independent build,
-release, and installation boundary intact.
+Start with the [source layout and local checks](docs/development.md). This repository prepares requests and parses provider results. HTTP transport, credential persistence, routing, accounting and logs belong in the gateway.
 
-## Where changes belong
-
-- `codex/src/lib.rs` exports the manifest and dispatches commands.
-- `attempt.rs` owns operation descriptors and request plans; `protocol.rs` owns
-  OAuth, model, and quota planning/parsing.
-- `settings.rs` owns the five-field settings schema; `identity.rs` owns request
-  context and credential-stable installation IDs.
-- `request_policy.rs` and `request-allowlists.json` own provider outbound filtering
-  and privacy normalization.
-- `scripts/` and `.github/workflows/` own native packaging and release gates.
-
-Gateway transport, credential persistence, routing, billing, and request logging
-belong in the gateway, not in a new plugin runtime.
-
-## Commands
-
-Run from the repository root with the toolchain in `rust-toolchain.toml`:
-
-```sh
-cargo fmt --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
-python3 scripts/test-release-package.py
-bash -n scripts/*.sh
-```
-
-For packaging changes, run `./scripts/verify-release.sh VERSION --development`
-with the current workspace version on a supported native GNU Linux host. It
-builds and verifies a development archive without claiming a clean source
-revision. For a release archive, follow [release maintenance](docs/releasing.md).
-Local checks need no provider credentials or paid upstream calls.
-
-For documentation-only changes, check paths, links, and claims against the source;
-do not run a native build or call a provider solely to validate prose.
-
-## Contracts to preserve
-
-- Treat ABI 1, manifest protocol 3, and settings schema 1 as separate contracts.
-  Read [Codex compatibility](docs/codex.md) before changing host-facing metadata.
-- Keep operation responses pass-through. The gateway's `general` parser consumes
-  upstream Responses usage; the plugin does not add response adapters or billing.
-- Consume compiled settings through `metadata.settings`, not legacy host-owned
-  identity fields. Preserve credential-stable installation IDs and privacy
-  filtering; do not restore metadata removed by gateway financial policy.
-- Keep the SDK pinned to a reviewed full Git revision for releases. Never bundle
-  the connector into gateway binaries/images or add silent installation/fallback.
-
-## Documentation and releases
-
-Documentation is English, with concise task-oriented headings, relative links
-between pages, tables for reference values, and `sh` command examples. Start at
-[docs/index.md](docs/index.md). Update affected links when moving or splitting a
-page. `LICENSE` is legal text, not prose to rewrite.
-
-Read [release maintenance](docs/releasing.md) for version, changelog, SDK, and tag
-changes. Never reuse a version for a different command protocol. Documentation
-edits do not authorize publishing, deployment, or changing an installed gateway.
+- When changing commands, keep the exported manifest, dispatch, [host-facing contract](docs/codex.md) and native package verification in sync. Native ABI, command protocol and settings schema are independent versions. Do not silently change a published tag or let a release depend on an unpinned SDK.
+- Read configured identity from `metadata.settings` and preserve credential-scoped installation IDs. Outbound policy and privacy normalization belong in this plugin. Do not restore a field already removed by gateway policy or put provider tokens in diagnostics.
+- Keep all Codex operations pass-through; use the gateway's declared general usage parser for upstream Responses counters rather than introducing plugin billing or estimation.
+- Run the pinned format, lint, workspace and packaging unit checks from the repository root. For native changes run `./scripts/verify-release.sh VERSION --development` with the workspace version on supported GNU Linux. Checks need neither a provider credential nor a live upstream call.
+- Write documentation in English under `docs/`; keep [the index](docs/index.md) linked to task guides. Preserve released changelog entries and license materials. Follow [release maintenance](docs/releasing.md) only when preparing a release; packaging does not authorize publication or activation.

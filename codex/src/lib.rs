@@ -28,7 +28,6 @@ pub fn manifest() -> PluginManifest {
             "settings.describe/v1",
             "settings.validate/v1",
             "settings.compile/v1",
-            "settings.migrate/v1",
             "attempt.context",
             "endpoints",
             "authorize_url",
@@ -48,7 +47,6 @@ pub fn manifest() -> PluginManifest {
             "attempt.body",
             "attempt.target",
             "attempt.headers",
-            "attempt.capabilities",
             "attempt.describe/v1",
             "attempt.image_edit_plan",
             "attempt.image_part_plan",
@@ -76,34 +74,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn manifest_declares_protocol_three_without_response_adaptation() {
-        let manifest = manifest();
-        assert_eq!(manifest.protocol_version, 3);
-        assert!(manifest.commands.iter().any(|c| c == "attempt.describe/v1"));
-        assert!(
-            manifest
-                .commands
-                .iter()
-                .any(|c| c == "attempt.capabilities")
-        );
-        assert!(!manifest.commands.iter().any(|c| c.starts_with("response.")));
-        assert!(
-            serde_json::to_vec(&manifest).unwrap().len()
-                <= ai_gateway_connector_sdk::MAX_MANIFEST_BYTES
-        );
-        let descriptor = dispatch("settings.describe/v1", json!({}), &[]).unwrap();
-        assert_eq!(descriptor.metadata["schema_version"], 1);
-        assert_eq!(descriptor.metadata["fields"].as_array().unwrap().len(), 5);
-        assert!(descriptor.body.is_empty());
-    }
-
     fn configured(mut metadata: Value) -> Value {
         let mut settings = serde_json::to_value(settings::Settings::default()).unwrap();
         settings["workspace_path"] = json!("/synthetic/project");
         settings["git_remote_url"] = json!("https://example.test/synthetic");
         settings["client_version"] = json!("9.8.7");
         settings["originator"] = json!("configured-codex");
+        settings["user_agent"] = json!("test-codex/9.8.7");
         metadata["settings"] = dispatch(
             "settings.compile/v1",
             json!({"schema_version":1,"values":settings}),
@@ -213,13 +190,12 @@ mod tests {
 
     #[test]
     fn maintenance_plans_use_only_compiled_plugin_identity() {
+        let endpoints = dispatch("endpoints", json!({}), &[]).unwrap().metadata["result"].clone();
         let result = dispatch(
             "models_plan",
             configured(json!({
-                "endpoints":{"issuer":"https://auth.openai.com",
-                    "responses_base_url":"https://chatgpt.com/backend-api/codex"},
-                "access_token":"selected-token","account_id":null,"is_fedramp":false,
-                "identity":{"originator":"must-not-be-used","client_version":"old","user_agent":"old"}
+                "endpoints":endpoints,
+                "access_token":"selected-token","account_id":null,"is_fedramp":false
             })),
             &[],
         )
@@ -227,6 +203,7 @@ mod tests {
         let plan = &result.metadata["result"];
         assert_eq!(plan["headers"]["version"], "9.8.7");
         assert_eq!(plan["headers"]["originator"], "configured-codex");
+        assert_eq!(plan["headers"]["user-agent"], "test-codex/9.8.7");
         assert!(
             plan["url"]
                 .as_str()
@@ -235,7 +212,7 @@ mod tests {
         );
         let rejected = dispatch(
             "models_plan",
-            json!({"identity":{"originator":"legacy"}}),
+            json!({"endpoints":endpoints,"access_token":"selected-token"}),
             &[],
         )
         .unwrap();

@@ -1,4 +1,5 @@
 //! Pure Codex control-plane request plans and provider response parsing.
+use crate::settings::Settings;
 use ai_gateway_connector_sdk::{PluginCallError, PluginOutput};
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -24,23 +25,6 @@ enum CodexConnectorError {
     InvalidModelsResponse,
     NoModels,
     InvalidQuotaResponse,
-}
-#[derive(Clone, Deserialize)]
-struct CodexOutboundIdentity {
-    originator: String,
-    client_version: String,
-    user_agent: String,
-}
-impl CodexOutboundIdentity {
-    fn originator(&self) -> &str {
-        &self.originator
-    }
-    fn client_version(&self) -> &str {
-        &self.client_version
-    }
-    fn user_agent(&self) -> &str {
-        &self.user_agent
-    }
 }
 #[derive(Serialize)]
 struct CodexQuotaUpdate {
@@ -91,14 +75,14 @@ impl CodexEndpoints {
             .map_err(|_| CodexConnectorError::InvalidEndpoint)
     }
 
-    fn models_url(&self, identity: &CodexOutboundIdentity) -> Result<Url, CodexConnectorError> {
+    fn models_url(&self, settings: &Settings) -> Result<Url, CodexConnectorError> {
         let mut url = Url::parse(&format!(
             "{}/models",
             self.responses_base_url.as_str().trim_end_matches('/')
         ))
         .map_err(|_| CodexConnectorError::InvalidEndpoint)?;
         url.query_pairs_mut()
-            .append_pair("client_version", identity.client_version());
+            .append_pair("client_version", &settings.client_version);
         Ok(url)
     }
 
@@ -119,11 +103,6 @@ impl CodexEndpoints {
         Url::parse(&format!("{backend}/wham/rate-limit-reset-credits/consume"))
             .map_err(|_| CodexConnectorError::InvalidEndpoint)
     }
-}
-
-#[derive(Clone, Serialize)]
-struct PkceCodes {
-    challenge: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -211,9 +190,9 @@ struct CodexQuotaResetResult {
 
 fn build_authorize_url(
     endpoints: &CodexEndpoints,
-    pkce: &PkceCodes,
+    challenge: &str,
     state: &str,
-    identity: &CodexOutboundIdentity,
+    settings: &Settings,
 ) -> Result<String, CodexConnectorError> {
     let mut url = endpoints
         .issuer
@@ -224,12 +203,12 @@ fn build_authorize_url(
         .append_pair("client_id", CODEX_OAUTH_CLIENT_ID)
         .append_pair("redirect_uri", CODEX_OAUTH_REDIRECT_URI)
         .append_pair("scope", CODEX_OAUTH_SCOPE)
-        .append_pair("code_challenge", &pkce.challenge)
+        .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("id_token_add_organizations", "true")
         .append_pair("codex_cli_simplified_flow", "true")
         .append_pair("state", state)
-        .append_pair("originator", identity.originator());
+        .append_pair("originator", &settings.originator);
     Ok(url.into())
 }
 fn parse_callback_url(value: &str) -> Result<CallbackCode, CodexConnectorError> {
@@ -549,7 +528,7 @@ fn normalize_claim(
 }
 
 fn codex_headers(
-    identity: &CodexOutboundIdentity,
+    settings: &Settings,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -570,17 +549,17 @@ fn codex_headers(
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_str(identity.user_agent())
+        HeaderValue::from_str(&settings.user_agent)
             .map_err(|_| CodexConnectorError::InvalidCredential)?,
     );
     headers.insert(
         "originator",
-        HeaderValue::from_str(identity.originator())
+        HeaderValue::from_str(&settings.originator)
             .map_err(|_| CodexConnectorError::InvalidCredential)?,
     );
     headers.insert(
         "version",
-        HeaderValue::from_str(identity.client_version())
+        HeaderValue::from_str(&settings.client_version)
             .map_err(|_| CodexConnectorError::InvalidCredential)?,
     );
     if is_fedramp {
@@ -640,11 +619,7 @@ fn process(
         })
     };
     match command {
-        "endpoints" => {
-            return output(json!({"issuer":CodexEndpoints::default().issuer,
-            "responses_base_url":CodexEndpoints::default().responses_base_url,
-            "redirect_uri":CODEX_OAUTH_REDIRECT_URI}));
-        }
+        "endpoints" => return output(encode(CodexEndpoints::default())?),
         "parse_callback" => return output(encode(parse_callback_url(field(&metadata, "url")?)?)?),
         "parse_identity" => return output(encode(parse_identity(field(&metadata, "token")?)?)?),
         "parse_expiration" => {
@@ -671,16 +646,13 @@ fn process(
     let endpoints: CodexEndpoints = serde_json::from_value(metadata["endpoints"].clone())
         .map_err(|_| CodexConnectorError::InvalidEndpoint)?;
     if command == "authorize_url" {
-        let identity = serde_json::from_value(metadata["settings"].clone())
+        let settings = Settings::from_metadata(&metadata)
             .map_err(|_| CodexConnectorError::InvalidCredential)?;
-        let pkce = PkceCodes {
-            challenge: field(&metadata, "challenge")?.into(),
-        };
         return output(encode(build_authorize_url(
             &endpoints,
-            &pkce,
+            field(&metadata, "challenge")?,
             field(&metadata, "state")?,
-            &identity,
+            &settings,
         )?)?);
     }
     let mut headers = serde_json::Map::new();
@@ -712,11 +684,10 @@ fn process(
             )
         }
         "models_plan" | "quota_plan" | "quota_reset_plan" => {
-            let identity: CodexOutboundIdentity =
-                serde_json::from_value(metadata["settings"].clone())
-                    .map_err(|_| CodexConnectorError::InvalidCredential)?;
+            let settings = Settings::from_metadata(&metadata)
+                .map_err(|_| CodexConnectorError::InvalidCredential)?;
             let auth = codex_headers(
-                &identity,
+                &settings,
                 field(&metadata, "access_token")?,
                 metadata["account_id"].as_str(),
                 metadata["is_fedramp"].as_bool().unwrap_or(false),
@@ -732,7 +703,7 @@ fn process(
                 );
             }
             match command {
-                "models_plan" => ("GET", endpoints.models_url(&identity)?, Vec::new()),
+                "models_plan" => ("GET", endpoints.models_url(&settings)?, Vec::new()),
                 "quota_plan" => ("GET", endpoints.quota_url()?, Vec::new()),
                 _ => {
                     headers.insert("content-type".into(), json!("application/json"));
@@ -774,11 +745,12 @@ pub fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn configured_identity() -> CodexOutboundIdentity {
-        CodexOutboundIdentity {
+    fn configured_identity() -> Settings {
+        Settings {
             originator: "codex_gateway".into(),
             client_version: "9.8.7".into(),
             user_agent: "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway".into(),
+            ..Settings::default()
         }
     }
     fn jwt(payload: Value) -> String {
@@ -787,39 +759,6 @@ mod tests {
             .encode(serde_json::to_vec(&payload).unwrap());
         format!("{header}.{payload}.signature")
     }
-    #[test]
-    fn compiled_identity_settings_drive_maintenance_model_request_headers() {
-        let mut values = serde_json::to_value(crate::settings::Settings::default()).unwrap();
-        values["originator"] = json!("gateway-visible");
-        values["client_version"] = json!("9.9.1");
-        values["user_agent"] = json!("gateway/9.9.1 (Linux; x86_64)");
-        let compiled = crate::settings::dispatch(
-            "settings.compile/v1",
-            json!({"schema_version":1,"values":values}),
-        )
-        .unwrap()
-        .metadata["config"]
-            .clone();
-        let endpoints = CodexEndpoints::default();
-        let plan = process(
-            "models_plan",
-            json!({
-                "endpoints":endpoints,
-                "settings":compiled,
-                "access_token":"access-token",
-                "account_id":null,
-                "is_fedramp":false
-            }),
-            &[],
-        )
-        .unwrap();
-        assert_eq!(plan.metadata["headers"]["originator"], "gateway-visible");
-        assert_eq!(
-            plan.metadata["headers"]["user-agent"],
-            "gateway/9.9.1 (Linux; x86_64)"
-        );
-    }
-
     #[test]
     fn derives_codex_models_and_quota_endpoints_without_url_join_truncation() {
         let endpoints = CodexEndpoints::default();
@@ -836,7 +775,7 @@ mod tests {
                 .query_pairs()
                 .find(|(name, _)| name == "client_version")
                 .map(|(_, value)| value.into_owned()),
-            Some(identity.client_version().to_owned())
+            Some(identity.client_version.clone())
         );
         assert_eq!(
             endpoints.quota_url().unwrap().path(),
@@ -852,15 +791,7 @@ mod tests {
         let endpoints = CodexEndpoints::default();
         let identity = configured_identity();
         let url = Url::parse(
-            &build_authorize_url(
-                &endpoints,
-                &PkceCodes {
-                    challenge: "challenge".into(),
-                },
-                "state-value",
-                &identity,
-            )
-            .unwrap(),
+            &build_authorize_url(&endpoints, "challenge", "state-value", &identity).unwrap(),
         )
         .unwrap();
         let query = url
@@ -892,7 +823,7 @@ mod tests {
         );
         assert_eq!(
             query.get("originator").map(|value| value.as_ref()),
-            Some(identity.originator())
+            Some(identity.originator.as_str())
         );
     }
     #[test]
@@ -903,17 +834,17 @@ mod tests {
             headers
                 .get("originator")
                 .and_then(|value| value.to_str().ok()),
-            Some(identity.originator())
+            Some(identity.originator.as_str())
         );
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
-            Some(identity.client_version())
+            Some(identity.client_version.as_str())
         );
         assert_eq!(
             headers
                 .get(USER_AGENT)
                 .and_then(|value| value.to_str().ok()),
-            Some(identity.user_agent())
+            Some(identity.user_agent.as_str())
         );
     }
     #[test]
@@ -1099,6 +1030,7 @@ mod tests {
     #[test]
     fn dispatch_uses_separate_plan_and_parse_operations() {
         let endpoints = dispatch("endpoints", json!({}), &[]).unwrap().metadata["result"].clone();
+        assert_eq!(endpoints, encode(CodexEndpoints::default()).unwrap());
         let plan = dispatch(
             "exchange_plan",
             json!({"endpoints":endpoints,"code":"a&b","verifier":"verify"}),
@@ -1111,7 +1043,11 @@ mod tests {
         );
         assert_eq!(plan.metadata["result"]["method"], "POST");
         let body = String::from_utf8(plan.body).unwrap();
-        assert!(body.contains("code=a%26b"));
+        let form = url::form_urlencoded::parse(body.as_bytes())
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(form["code"], "a&b");
+        assert_eq!(form["code_verifier"], "verify");
+        assert_eq!(form["redirect_uri"], CODEX_OAUTH_REDIRECT_URI);
         let parsed = dispatch(
             "refresh_parse",
             json!({"status":400}),
