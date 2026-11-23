@@ -196,7 +196,7 @@ def verify_manifest(manifest, version):
     if any(command.startswith("response.") for command in manifest["commands"]):
         raise ValueError("Codex response adaptation is not supported")
     required = {
-        "attempt.context", "attempt.describe/v1", "attempt.capabilities",
+        "attempt.context", "attempt.describe/v1",
         "attempt.body", "attempt.target", "attempt.headers",
         "attempt.image_edit_plan", "attempt.image_part_plan",
         "settings.describe/v1", "settings.validate/v1", "settings.compile/v1",

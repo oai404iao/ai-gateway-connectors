@@ -1,115 +1,17 @@
-# Release maintenance
+# Release a connector package
 
-Gateway and connector releases are independent. This workflow publishes
-connector archives; it never installs them into a gateway or changes an
-administrator's active version. Do not bundle Codex into gateway binaries or
-images or add silent installation or fallback.
+Connector packages ship independently from the gateway. Publication makes an artifact available for installation; it does not activate it.
 
-## Prepare a version
+## Prepare and check the release
 
-Update `[workspace.package].version` in `Cargo.toml`, add a dated entry in
-`CHANGELOG.md`, and update version examples together. Update `Cargo.lock` for the
-workspace crate's new version too, so the locked build gates accept the release.
-Keep historical changelog entries intact. Never move or reuse a published tag.
+1. Set a new workspace version in `Cargo.toml`, update `Cargo.lock` and add a dated [changelog](../CHANGELOG.md) entry. Keep the SDK pinned to a reviewed full Git commit. Use a new version for a changed command contract.
+2. Run `./scripts/verify-release.sh VERSION --development` to check uncommitted changes. On the clean release commit, run `./scripts/verify-release.sh VERSION` without that flag. This runs formatting, Clippy, Rust and package tests, then builds and verifies a native archive in the Cargo target directory's `release-package/`.
+3. Check the [host command contract](codex.md#compatibility) against the gateway being paired with the artifact. The packager checks required request, settings, image, OAuth, discovery and quota commands. It calls `attempt.describe/v1` for each operation to verify transport, pass-through response mode and usage parser.
 
-Version 0.2.1 declares protocol 3 while the 0.2.0 release history records
-protocol 2. Select a new package version before publishing a changed contract.
-
-Pin `ai-gateway-connector-sdk` to a reviewed 40-character Git commit. Regenerate
-`Cargo.lock` when the dependency changes as well. Include the updated lockfile and
-manifest in the release commit for either kind of change. Local path dependencies
-are only for joint SDK development; tag preflight rejects them.
-
-## Check the contract
-
-ABI 1 exports `ai_gateway_connector_entry_v1`. The manifest currently declares
-command protocol 3 and settings schema 1. The reviewed SDK pin is retained
-because its ABI-1 JSON encoding supports the metadata additions; do not import
-unpublished SDK source solely to change protocol metadata.
-
-The package gate requires protocol 3 and the commands the gateway uses for
-settings, request preparation (including both image edit plans), OAuth, models,
-and quota management. It checks `attempt.capabilities` and `attempt.describe/v1`,
-then dispatches the pure, bounded descriptor for each operation without
-credentials or I/O. Descriptors must select operation-specific transport,
-response pass-through, and the gateway's `general` parser for upstream Responses
-usage. Response-adapter commands are rejected.
-
-Native ABI and command protocol are separate contracts. Publish only a connector
-and host pairing that supports both. See [Codex compatibility](codex.md).
-
-## Run the local gate
-
-Use the pinned toolchain and a native GNU Linux environment compatible with the
-official glibc baseline. Prerequisites are listed in [development](development.md#prerequisites).
-
-With the current workspace version:
-
-```sh
-./scripts/check-release-version.sh 0.2.1 --require-pinned-sdk
-./scripts/verify-release.sh 0.2.1
-bash -n scripts/*.sh
-```
-
-Replace `0.2.1` after preparing a new version. Release packaging requires a clean
-Git checkout, a pinned SDK, and the matching version committed in `Cargo.toml`.
-Before committing, use `verify-release.sh VERSION --development` to exercise
-the package gate without claiming a source commit or creating release assets.
-
-The combined gate runs package-verifier tests, formatting, locked Clippy and
-workspace tests, then builds and verifies the actual shared-library archive.
-No provider secrets or real API requests are used. Packaging honors
-`CARGO_TARGET_DIR`.
-
-Verification checks the complete checksum set, native ABI and exported manifest,
-library digest, required license materials, ELF architecture, and GNU libc symbol
-requirements no newer than 2.36. Missing dependency license texts or a newer libc
-requirement fail the gate. To verify a trusted archive independently, run
-`python3 scripts/release-package.py verify ARCHIVE` in this repository with the
-recorded source commit available locally. The verifier checks the repository
-identity, connector version in that commit's `Cargo.toml`, and exact SDK Git
-source in its `Cargo.lock`. These are consistency checks, not a signature or a
-reproducible-build attestation. It rejects development archives unless you explicitly pass `--development`.
-See [archive contents](development.md#archive-contents).
+For an independent check of a trusted archive, run `python3 scripts/release-package.py verify ARCHIVE` from a connector checkout containing the recorded commit. The verifier checks checksums, native ABI, manifest, ELF target, glibc requirements and license materials. It compares the connector version and exact SDK Git source with `Cargo.toml` and `Cargo.lock` at the recorded revision. These checks do not sign the archive or establish reproducibility.
 
 ## Publish an annotated tag
 
-After the reviewed release commit is on `main` and CI is green, create and push
-an annotated `vX.Y.Z` tag for the prepared version. For example, only when 0.3.0
-has actually been prepared:
+After the release commit is reviewed on `main` and CI passes, create and push a new annotated `vX.Y.Z` tag for that commit. Tag preflight checks the commit ancestry, version, dated changelog entry and pinned SDK. Never move a published tag.
 
-```sh
-git tag -a v0.3.0 -m "Release v0.3.0"
-git push origin v0.3.0
-```
-
-The tag workflow verifies that the tag is annotated, resolves to the triggering
-commit on `main`, matches the workspace version and dated changelog entry, and
-uses an immutable SDK pin.
-
-Read-only native jobs build both targets:
-
-| Runner | Target |
-| --- | --- |
-| `ubuntu-24.04` | `x86_64-unknown-linux-gnu` |
-| `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` |
-
-Both run inside the same digest-pinned `rust:1.97.1-bookworm` image as the gateway,
-not against the runners' newer libc. The gate checks ELF requirements before
-loading the ABI descriptor and records the 2.36 baseline in `build-info.json`.
-
-Only the final publisher receives `contents: write`; it does not build untrusted
-code. It publishes both verified archives and their `.sha256` files after all
-builds pass. Actions are pinned to full commit SHAs. CI is read-only and does not
-write caches, including on pull requests.
-
-## Confirm the release
-
-Check that the GitHub Release contains both architecture archives and both
-checksum files. GitHub supplies source archives for the exact tag, and package
-metadata records the source commit and SDK source. Preserve corresponding-source
-availability and the AGPL and dependency license materials when redistributing.
-
-Activation is a separate administrator action. Link users to
-[installation and upgrades](deployment.md), including the matching gateway
-requirements, rather than implying publication enables the connector.
+The workflow runs native builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` in the pinned Rust bookworm image. Only the final publishing job gets write access; it checks and publishes the two archives and their companion `.sha256` files. Verify all four assets are present and preserve corresponding source, licenses and notices when redistributing them.

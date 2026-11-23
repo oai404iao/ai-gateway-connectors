@@ -145,17 +145,6 @@ pub(crate) fn dispatch(command: &str, metadata: Value) -> Result<PluginOutput, P
                 json!({"config":metadata["values"]})
             }
         }
-        "settings.migrate/v1" => {
-            if metadata["from_schema_version"].as_u64() != Some(1)
-                || !validate(&metadata["values"]).is_empty()
-            {
-                return Err(PluginCallError::new(
-                    "unsupported_schema",
-                    "Unsupported settings migration",
-                ));
-            }
-            json!({"schema_version":1,"values":metadata["values"]})
-        }
         _ => {
             return Err(PluginCallError::new(
                 "unsupported_command",
@@ -247,8 +236,8 @@ mod tests {
         }
         assert!(
             dispatch(
-                "settings.migrate/v1",
-                json!({"from_schema_version":2,"values":Settings::default()})
+                "settings.compile/v1",
+                json!({"schema_version":2,"values":Settings::default()})
             )
             .is_err()
         );

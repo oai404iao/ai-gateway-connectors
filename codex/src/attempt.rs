@@ -112,9 +112,6 @@ pub fn dispatch(command: &str, m: Value, body: &[u8]) -> Result<PluginOutput, Pl
             output.metadata = json!({"url": url.as_str()});
         }
         "attempt.headers" => output.metadata = headers(&m)?,
-        "attempt.capabilities" => {
-            output.metadata = RequestInterface::for_operation(&m)?.capabilities();
-        }
         "attempt.describe/v1" => {
             if !body.is_empty() {
                 return Err(error("invalid_request_body"));
@@ -379,19 +376,18 @@ mod tests {
     #[test]
     fn descriptors_are_bounded_and_reuse_general_for_actual_upstream_usage() {
         for (operation, protocol) in OPERATIONS {
-            let metadata = json!({"operation":operation});
-            let descriptor = dispatch("attempt.describe/v1", metadata.clone(), &[]).unwrap();
-            let legacy = dispatch("attempt.capabilities", metadata, &[]).unwrap();
+            let descriptor =
+                dispatch("attempt.describe/v1", json!({"operation":operation}), &[]).unwrap();
             assert!(descriptor.body.is_empty());
-            assert_eq!(descriptor.metadata.as_object().unwrap().len(), 3);
-            assert_eq!(descriptor.metadata["capabilities"], legacy.metadata);
-            for flag in [
-                "preserves_affinity_on_failure",
-                "successful_response_is_sse",
-                "changes_request_body",
-            ] {
-                assert!(descriptor.metadata["capabilities"][flag].is_boolean());
-            }
+            let responses = matches!(operation, "responses" | "responses-ws");
+            assert_eq!(
+                descriptor.metadata["capabilities"],
+                json!({
+                    "preserves_affinity_on_failure": responses || operation == "web_search",
+                    "successful_response_is_sse": responses,
+                    "changes_request_body": operation != "web_search"
+                })
+            );
             assert_eq!(
                 descriptor.metadata["protocols"],
                 json!([{"protocol":protocol,"response":"passthrough"}])

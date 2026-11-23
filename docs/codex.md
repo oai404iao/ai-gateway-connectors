@@ -1,150 +1,38 @@
-# Codex operations and compatibility
-
-Codex adapts gateway operations to the provider's protocol. It does not run its
-own HTTP service, store credentials, or replace gateway routing and billing.
-Install and enable it through a compatible gateway before configuring routes.
+# Codex protocol
 
 ## Compatibility
 
-> Codex 0.2.1 requires command protocol 3 support in the gateway.
+The native connector identifies itself as `codex`. Use a gateway with ABI 1 and command protocol 3 that takes operation capabilities from `attempt.describe/v1`. The plugin receives compiled settings in `metadata.settings` and supplies an opaque request context. A matching CPU architecture or ABI alone does not establish command compatibility.
 
-| Contract | Current source |
-| --- | --- |
-| Connector ID | `codex` |
-| Native SDK ABI | `1` |
-| Manifest command protocol | `3` |
-| Settings schema | `1` |
-| Release build-info schema | `1` |
-| Library | `libai_gateway_connector_codex.so` |
-| Release targets | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` |
-| Official build baseline | Digest-pinned Debian bookworm Rust 1.97.1 container; glibc requirements no newer than 2.36 |
-
-Use the matching native CPU architecture and a compatible GNU libc. Official
-artifacts do not support musl/Alpine, Windows, or macOS.
-
-The gateway must support both ABI 1 and Codex's protocol-3 configured-generation
-contract, including plugin-owned settings, opaque request context, explicit
-transport descriptors, and upstream-usage declarations. An ABI match is not
-enough. Startup-only hosts using the old identity-metadata contract are not
-compatible. Incompatible hosts must reject the manifest before dispatch.
-
-The SDK Git revision is pinned in `Cargo.toml` and `Cargo.lock` and recorded in
-each archive's `build-info.json`. The reviewed pin's ABI-1 JSON envelopes can
-carry protocol-3 descriptors without a dependency revision change. Check the
-artifact's manifest and the host's command support, not just the SDK revision.
+The exported manifest lists supported commands and operations; release packages ship a copy as `manifest.json`. Provider settings use [schema 1](configuration.md). Package metadata and SDK provenance are described in [Development](development.md#archive-contents).
 
 ## Supported operations
 
-Use the gateway's client API and route configuration. The names below are
-connector operation identifiers, not additional public HTTP endpoints.
+These are connector operation IDs for gateway routing, not additional HTTP endpoints. Each has one transport:
 
-| Operation | Declared protocol | Behavior |
+| Operation | Transport | Request |
 | --- | --- | --- |
-| `responses` | `sse` | Streaming Responses over HTTP; non-streaming requests are unsupported |
-| `responses-ws` | `websocket` | Responses over a WebSocket connection |
-| `web_search` | `non_stream` | Standalone search |
-| `images_generation` | `non_stream` | Image generation; streaming is unsupported |
-| `images_edit` | `non_stream` | Image edit; the gateway handles client multipart input |
+| `responses` | `sse` | HTTP Responses with `stream: true` and `store: false` |
+| `responses-ws` | `websocket` | Sequential `response.create`; continuation requires the same eligible upstream connection |
+| `web_search` | `non_stream` | Standalone search with its own request fields and route |
+| `images_generation` | `non_stream` | JSON generation request |
+| `images_edit` | `non_stream` | Gateway captures client multipart data and streams the plugin's JSON/base64 edit format |
 
-For image edits, the connector validates fields and supplies JSON/base64 body
-templates; the gateway handles image bytes and transport. See the gateway's
-upload limits as well as the connector's restrictions. A supported operation
-does not guarantee that a particular model or credential has provider access.
+Responses HTTP and WebSocket strip caller-supplied `x-codex-routing-hint`; the gateway can generate the hint from the final wire model and tier. Both accept `prompt_cache_options` with exactly `{"ttl":"30m"}` or `{"ttl":"12h"}`; `null` is omitted.
 
 ### Image restrictions
 
-- Image edits support at most five images and do not support masks.
-- Generation accepts `background`, `model`, `n`, `prompt`, `quality`, and `size`.
-  Edit accepts the corresponding multipart fields plus `image` or `image[]`;
-  `model` and `prompt` are required. Duplicate edit text fields are rejected.
-- Edit `background` must be `transparent`, `opaque`, or `auto`; `quality` must be
-  `low`, `medium`, `high`, or `auto`. `n` must parse as an unsigned integer.
-- Image streaming is unsupported. An edit `stream` field is accepted only as
-  `false` or `0` and is not forwarded.
-- Generation and edit accept `output_format=gif` with optional sibling integer
-  fields `frame_count` (2–16) and `frame_duration_ms` (20–2000). Multipart
-  carries them as decimal text. Without GIF output, neither control is valid.
-  Omitted controls stay omitted; `output_format=png` remains an ignored default.
-- Edit fields `input_fidelity`, `mask`, and `output_compression` are rejected.
-- Image parts need an `image/` content type of at most 128 bytes, or a recognized
-  `.png`, `.jpg`, `.jpeg`, `.webp`, or `.gif` filename when the type is absent.
+- Generation accepts `model`, `prompt`, `background`, `n`, `quality`, and `size`. Edit requires `model`, `prompt` and one to five input images, with no mask or duplicate text fields. `input_fidelity` and `output_compression` are unsupported.
+- For an edit, `background` accepts `transparent`, `opaque`, or `auto`; `quality` accepts `low`, `medium`, `high`, or `auto`. `n` is an unsigned integer. An edit's `stream` must be `false` or `0` if present.
+- Generation and edit accept `output_format=gif` with optional `frame_count` (2–16) and `frame_duration_ms` (20–2000). These are sibling integers, sent as decimal text in multipart; neither is allowed for other formats. `output_format=png` is omitted.
+- Edit image parts need an `image/` content type of at most 128 bytes, or a `.png`, `.jpg`, `.jpeg`, `.webp`, or `.gif` filename if the type is missing. The gateway enforces upload size limits.
 
-These are connector policy limits, not a promise of full Images API parity.
+### Operation descriptors and usage
 
-### WebSocket continuation
-
-WebSocket connections stay on their selected plugin generation. Continuation
-state cannot be moved to another upstream socket; clients must recover when a
-connection is lost.
+`attempt.describe/v1` takes an operation and returns its capability flags, supported transport, response mode, and usage descriptor. All Codex operations return provider responses unchanged and declare `{"parser":"general","format":"open_ai_responses"}` for usage. The gateway parses the actual upstream counters; the connector does not estimate missing usage or set prices.
 
 ## OAuth, models, and quotas
 
-Use the gateway's credential-management workflow for authorization and refresh.
-The connector plans and parses OAuth exchanges; the gateway performs network
-requests and stores credentials durably. The connector does not require its own
-credential file or background login process.
+`endpoints` provides the issuer and Responses base URL. `authorize_url` constructs the PKCE S256 authorization URL; the redirect used for authorization and token exchange is `http://localhost:1455/auth/callback`. `parse_callback` checks the loopback scheme, host, port and path, and extracts a nonempty code and state. Complete authorization through the gateway using that callback. Restart an unfinished flow if the plugin generation changes.
 
-Authorization uses PKCE S256 and the loopback redirect
-`http://localhost:1455/auth/callback`. The callback must use that exact scheme,
-host, port, and path and include nonempty `code` and `state`. Use the matching
-gateway's procedure for completing authorization on a remote machine rather
-than changing the callback URL.
-
-Model and quota discovery follow the same division: Codex supplies request plans
-and parses provider results, while the gateway schedules and executes them.
-Quota observations and reset information are provider account data, not billing
-usage. Restart authorization if an unfinished OAuth flow belongs to a different
-plugin generation.
-
-If authorization fails, distinguish a denied or malformed callback from a token
-endpoint or backend error. An invalid or expired refresh token may require
-reauthorization; generic backend failures or malformed model/quota data should
-be diagnosed as such, not treated automatically as a reason to log in again.
-
-## Responses and usage
-
-The connector strips caller-supplied `x-codex-routing-hint`; the gateway can
-generate the HTTP or WebSocket handshake hint from the final wire model and tier.
-For both transports, `prompt_cache_options` accepts exactly `{"ttl":"30m"}` or
-`{"ttl":"12h"}`; `null` is omitted and other values are rejected.
-
-Every operation declares response mode `passthrough`. Codex does not implement
-`response.json/v1` or `response.event/v1`; it does not rewrite provider response
-bytes, usage fields, or terminal events.
-
-All operation descriptors select:
-
-```json
-{"usage":{"parser":"general","format":"open_ai_responses"}}
-```
-
-This tells the gateway to use its shared parser for the actual upstream
-Responses counter interface, including standalone search and Images. The public
-client API format does not determine which upstream usage parser to use.
-
-The descriptor does not estimate missing usage, parse OAuth quota windows,
-change prices, or transfer billing ownership to the plugin. Canonical usage
-storage and input/cache token inclusion rules remain gateway responsibilities.
-
-## Connector command surface
-
-These are native SDK commands for host integration, not shell commands:
-
-| Area | Commands |
-| --- | --- |
-| Settings | `settings.describe/v1`, `settings.validate/v1`, `settings.compile/v1`, `settings.migrate/v1` |
-| OAuth | `endpoints`, `authorize_url`, `parse_callback`, `parse_identity`, `parse_expiration`, `exchange_plan`, `exchange_parse`, `refresh_plan`, `refresh_parse` |
-| Discovery | `models_plan`, `models_parse`, `quota_plan`, `quota_parse`, `quota_reset_plan`, `quota_reset_parse` |
-| Request adaptation | `attempt.context`, `attempt.body`, `attempt.target`, `attempt.headers`, `attempt.capabilities`, `attempt.describe/v1` |
-| Image edit | `attempt.image_edit_plan`, `attempt.image_part_plan` |
-
-`attempt.describe/v1` is a pure, bounded declaration for one operation. It returns
-the three capability flags (`preserves_affinity_on_failure`,
-`successful_response_is_sse`, `changes_request_body`), one supported protocol,
-response pass-through, and the usage descriptor. The gateway uses it to reject
-unsupported transports before upstream dispatch. Images edit's non-streaming
-descriptor maps to the gateway's multipart handling.
-
-For implementation details, start with the exported manifest in
-[`codex/src/lib.rs`](https://github.com/oai404iao/ai-gateway-connectors/blob/main/codex/src/lib.rs)
-and the SDK revision recorded with your artifact.
+The connector plans token exchange, refresh, model discovery, quota reads and reset-credit consumption; the gateway executes the plans. A refresh may update a subset of tokens but must return at least one nonempty token. Permanent refresh failures require reauthorization. A failed backend request is not by itself a reason to replace credentials. Quota-window observations are account data, not billable request usage.
