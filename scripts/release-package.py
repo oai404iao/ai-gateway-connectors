@@ -13,8 +13,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+SOURCE_REPOSITORY = "https://github.com/oai404iao/ai-gateway-connectors"
 LIBRARY = "libai_gateway_connector_codex.so"
 TARGET_MACHINES = {"x86_64-unknown-linux-gnu": 62, "aarch64-unknown-linux-gnu": 183}
 GLIBC_BASELINE = (2, 36)
@@ -48,9 +50,25 @@ class CallOutput(ctypes.Structure):
     _fields_ = [("metadata", ByteSlice), ("body", ByteSlice)]
 
 
-def cargo_target_directory():
-    path = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", "target"))
-    return path if path.is_absolute() else ROOT / path
+def build_library(target, package_id):
+    build = subprocess.run(
+        ["cargo", "build", "--locked", "--release", "--package", "ai-gateway-connector-codex",
+         "--lib", "--target", target, "--message-format=json"],
+        cwd=ROOT, stdout=subprocess.PIPE, text=True,
+    )
+    libraries = []
+    for line in build.stdout.splitlines():
+        message = json.loads(line)
+        if message["reason"] == "compiler-message":
+            print(message["message"]["rendered"], file=sys.stderr, end="")
+        if (message["reason"] == "compiler-artifact" and message["package_id"] == package_id
+                and "cdylib" in message["target"]["crate_types"]):
+            libraries.extend(pathlib.Path(filename) for filename in message["filenames"]
+                             if pathlib.Path(filename).name == LIBRARY)
+    build.check_returncode()
+    if len(libraries) != 1:
+        raise ValueError("Cargo did not report exactly one Codex cdylib artifact")
+    return libraries[0]
 
 
 def sha256(path):
@@ -178,15 +196,18 @@ def verify_manifest(manifest, version):
     if any(command.startswith("response.") for command in manifest["commands"]):
         raise ValueError("Codex response adaptation is not supported")
     required = {
-        "attempt.context",
-        "attempt.describe/v1",
-        "attempt.capabilities",
-        "settings.describe/v1",
-        "settings.validate/v1",
-        "settings.compile/v1",
+        "attempt.context", "attempt.describe/v1", "attempt.capabilities",
+        "attempt.body", "attempt.target", "attempt.headers",
+        "attempt.image_edit_plan", "attempt.image_part_plan",
+        "settings.describe/v1", "settings.validate/v1", "settings.compile/v1",
+        "endpoints", "authorize_url", "parse_callback", "parse_identity", "parse_expiration",
+        "exchange_plan", "exchange_parse", "refresh_plan", "refresh_parse",
+        "models_plan", "models_parse", "quota_plan", "quota_parse",
+        "quota_reset_plan", "quota_reset_parse",
     }
-    if not required.issubset(manifest["commands"]):
-        raise ValueError("plugin lacks required identity/settings/descriptor commands")
+    missing = required.difference(manifest["commands"])
+    if missing:
+        raise ValueError(f"plugin lacks required commands: {', '.join(sorted(missing))}")
 
 
 def dependency_licenses(stage, metadata):
@@ -241,17 +262,53 @@ def dependency_licenses(stage, metadata):
     return sdk_source
 
 
-def build(version, target):
+def source_revision(development):
+    if development:
+        return "uncommitted"
+    if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"], cwd=ROOT):
+        raise ValueError("release packaging requires a clean checkout; use --development for local checks")
+    return subprocess.check_output(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=ROOT, text=True).strip()
+
+
+def verify_provenance(info, development):
+    if info.get("source_repository") != SOURCE_REPOSITORY:
+        raise ValueError("unexpected source repository")
+    revision = info.get("source_revision")
+    if development and revision == "uncommitted":
+        return
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("release package requires a full source commit")
+    if subprocess.check_output(["git", "cat-file", "-t", revision], cwd=ROOT, text=True).strip() != "commit":
+        raise ValueError("source revision is not a commit")
+    manifest = subprocess.check_output(["git", "show", f"{revision}:Cargo.toml"], cwd=ROOT, text=True)
+    if tomllib.loads(manifest)["workspace"]["package"]["version"] != info["connector_version"]:
+        raise ValueError("source commit version does not match packaged connector version")
+    lock = subprocess.check_output(["git", "show", f"{revision}:Cargo.lock"], cwd=ROOT, text=True)
+    sdk_sources = [p.get("source") for p in tomllib.loads(lock)["package"]
+                   if p["name"] == "ai-gateway-connector-sdk"]
+    sdk_source = info.get("sdk_source")
+    if (not isinstance(sdk_source, str) or not re.fullmatch(r"git\+\S+#[a-f0-9]{40}", sdk_source)
+            or sdk_sources != [sdk_source]):
+        raise ValueError("SDK source does not match the pinned Git source in the commit's Cargo.lock")
+
+
+def build(version, target, development):
     if target not in TARGET_MACHINES or not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("invalid version or target")
-    target_directory = cargo_target_directory()
-    output = target_directory / "release-package"
-    output.mkdir(parents=True, exist_ok=True)
-    source = target_directory / target / "release" / LIBRARY
-    manifest = inspect_library(source, version, target)
+    revision = source_revision(development)
+    check_version = [ROOT / "scripts/check-release-version.sh", version]
+    if not development:
+        check_version.append("--require-pinned-sdk")
+    subprocess.run(check_version, cwd=ROOT, check=True)
     metadata = json.loads(
         subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=ROOT)
     )
+    package_id, = [p["id"] for p in metadata["packages"] if p["id"] in metadata["workspace_members"]
+                   and p["name"] == "ai-gateway-connector-codex"]
+    source = build_library(target, package_id)
+    target_directory = pathlib.Path(metadata["target_directory"])
+    output = target_directory / ("development-package" if development else "release-package")
+    output.mkdir(parents=True, exist_ok=True)
     name = f"ai-gateway-connector-codex-{version}-{target}"
     archive = output / f"{name}.tar.gz"
     with tempfile.TemporaryDirectory(prefix=".package-", dir=output) as temporary:
@@ -259,13 +316,13 @@ def build(version, target):
         stage.mkdir()
         shutil.copyfile(source, stage / LIBRARY)
         (stage / LIBRARY).chmod(0o444)
+        manifest = inspect_library(stage / LIBRARY, version, target)
         for filename in ("LICENSE", "README.md", "CHANGELOG.md"):
             shutil.copyfile(ROOT / filename, stage / filename)
         shutil.copytree(ROOT / "docs", stage / "docs")
         sdk_source = dependency_licenses(stage, metadata)
-        revision = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"], cwd=ROOT, capture_output=True, text=True
-        )
+        if source_revision(development) != revision:
+            raise ValueError("source commit changed during release build")
         write_json(stage / "manifest.json", manifest)
         write_json(
             stage / "build-info.json",
@@ -277,8 +334,8 @@ def build(version, target):
                 "glibc_baseline": ".".join(map(str, GLIBC_BASELINE)),
                 "library": LIBRARY,
                 "library_sha256": sha256(stage / LIBRARY),
-                "source_repository": "https://github.com/oai404iao/ai-gateway-connectors",
-                "source_revision": revision.stdout.strip() if revision.returncode == 0 else "uncommitted",
+                "source_repository": SOURCE_REPOSITORY,
+                "source_revision": revision,
                 "sdk_source": sdk_source,
             },
         )
@@ -289,7 +346,7 @@ def build(version, target):
         with tarfile.open(archive, "w:gz") as destination:
             destination.add(stage, arcname=name)
     archive.with_suffix(archive.suffix + ".sha256").write_text(f"{sha256(archive)}  {archive.name}\n")
-    verify(archive)
+    verify(archive, development)
     print(archive)
 
 
@@ -363,7 +420,7 @@ def extract_archive(archive, destination):
                         remaining -= len(chunk)
 
 
-def verify(archive):
+def verify(archive, development):
     archive = archive.resolve()
     checksum = archive.with_suffix(archive.suffix + ".sha256").read_text()
     if checksum != f"{sha256(archive)}  {archive.name}\n":
@@ -397,6 +454,7 @@ def verify(archive):
         if checked != files - {"SHA256SUMS"}:
             raise ValueError("incomplete checksum set")
         info = json.loads((stage / "build-info.json").read_text())
+        verify_provenance(info, development)
         if info["schema_version"] != 1 or info["connector_abi"] != 1:
             raise ValueError("unsupported build-info schema or ABI")
         if info["glibc_baseline"] != ".".join(map(str, GLIBC_BASELINE)):
@@ -411,11 +469,15 @@ def verify(archive):
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 4 and sys.argv[1] == "build":
-            build(sys.argv[2], sys.argv[3])
-        elif len(sys.argv) == 3 and sys.argv[1] == "verify":
-            verify(pathlib.Path(sys.argv[2]))
+        args = sys.argv[1:]
+        development = args[-1:] == ["--development"]
+        if development:
+            args.pop()
+        if len(args) == 3 and args[0] == "build":
+            build(args[1], args[2], development)
+        elif len(args) == 2 and args[0] == "verify":
+            verify(pathlib.Path(args[1]), development)
         else:
-            raise ValueError("usage: release-package.py build VERSION TARGET | verify ARCHIVE")
+            raise ValueError("usage: release-package.py (build VERSION TARGET | verify ARCHIVE) [--development]")
     except (ValueError, KeyError, OSError, tarfile.TarError, subprocess.CalledProcessError) as error:
         raise SystemExit(str(error)) from error

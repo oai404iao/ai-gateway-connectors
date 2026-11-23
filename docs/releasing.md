@@ -27,9 +27,10 @@ command protocol 3 and settings schema 1. The reviewed SDK pin is retained
 because its ABI-1 JSON encoding supports the metadata additions; do not import
 unpublished SDK source solely to change protocol metadata.
 
-The package gate requires protocol 3, `attempt.describe/v1`, legacy
-`attempt.capabilities`, `attempt.context`, and settings describe/validate/compile
-commands. It dispatches the pure, bounded descriptor for each operation without
+The package gate requires protocol 3 and the commands the gateway uses for
+settings, request preparation (including both image edit plans), OAuth, models,
+and quota management. It checks `attempt.capabilities` and `attempt.describe/v1`,
+then dispatches the pure, bounded descriptor for each operation without
 credentials or I/O. Descriptors must select operation-specific transport,
 response pass-through, and the gateway's `general` parser for upstream Responses
 usage. Response-adapter commands are rejected.
@@ -50,7 +51,10 @@ With the current workspace version:
 bash -n scripts/*.sh
 ```
 
-Replace `0.2.1` after preparing a new version.
+Replace `0.2.1` after preparing a new version. Release packaging requires a clean
+Git checkout, a pinned SDK, and the matching version committed in `Cargo.toml`.
+Before committing, use `verify-release.sh VERSION --development` to exercise
+the package gate without claiming a source commit or creating release assets.
 
 The combined gate runs package-verifier tests, formatting, locked Clippy and
 workspace tests, then builds and verifies the actual shared-library archive.
@@ -60,7 +64,13 @@ No provider secrets or real API requests are used. Packaging honors
 Verification checks the complete checksum set, native ABI and exported manifest,
 library digest, required license materials, ELF architecture, and GNU libc symbol
 requirements no newer than 2.36. Missing dependency license texts or a newer libc
-requirement fail the gate. See [archive contents](development.md#archive-contents).
+requirement fail the gate. To verify a trusted archive independently, run
+`python3 scripts/release-package.py verify ARCHIVE` in this repository with the
+recorded source commit available locally. The verifier checks the repository
+identity, connector version in that commit's `Cargo.toml`, and exact SDK Git
+source in its `Cargo.lock`. These are consistency checks, not a signature or a
+reproducible-build attestation. It rejects development archives unless you explicitly pass `--development`.
+See [archive contents](development.md#archive-contents).
 
 ## Publish an annotated tag
 

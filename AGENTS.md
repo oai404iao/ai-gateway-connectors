@@ -30,11 +30,11 @@ python3 scripts/test-release-package.py
 bash -n scripts/*.sh
 ```
 
-For packaging changes, use `./scripts/verify-release.sh 0.2.1` with the current
-workspace version on a supported native GNU Linux host. It builds and loads the
-real library and verifies its archive. See [development](docs/development.md) for
-prerequisites and output paths. Local checks need no provider credentials or
-paid upstream calls.
+For packaging changes, run `./scripts/verify-release.sh VERSION --development`
+with the current workspace version on a supported native GNU Linux host. It
+builds and verifies a development archive without claiming a clean source
+revision. For a release archive, follow [release maintenance](docs/releasing.md).
+Local checks need no provider credentials or paid upstream calls.
 
 For documentation-only changes, check paths, links, and claims against the source;
 do not run a native build or call a provider solely to validate prose.

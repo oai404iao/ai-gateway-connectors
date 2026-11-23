@@ -44,9 +44,14 @@ the managed plugin directory are configured in the gateway.
   no leading or trailing whitespace.
 - `git_remote_url` must be an HTTPS URL with a host and a non-root path. User
   information, query strings, fragments, and surrounding whitespace are rejected.
-- `originator`, `client_version`, and `user_agent` must be nonempty HTTP header
-  values without surrounding whitespace.
+- `originator`, `client_version`, and `user_agent` must be nonempty visible
+  ASCII HTTP header values without surrounding whitespace. Non-ASCII and control
+  characters are rejected so configured identities can be emitted by the plugin's
+  outbound header builder.
 - Each value must fit its field's character limit.
+
+If saved identity headers contain non-ASCII characters, replace them with ASCII
+values before activating a plugin version that enforces this rule.
 
 Changing `client_version` does not derive a new `user_agent`; set both explicitly
 when you intend them to match.
