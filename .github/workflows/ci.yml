@@ -43,7 +43,9 @@ jobs:
         run: |
           version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
           ./scripts/check-release-version.sh "$version" --require-pinned-sdk
-          ./scripts/verify-release.sh "$version"
+          # The runner owns the checkout mounted into this build container.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
+            ./scripts/verify-release.sh "$version"
       - name: Check shell scripts
         run: bash -n scripts/*.sh
 

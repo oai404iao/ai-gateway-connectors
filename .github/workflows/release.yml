@@ -67,7 +67,9 @@ jobs:
           EXPECTED_TARGET: ${{ matrix.target }}
         run: |
           test "$(rustc -vV | awk '$1 == "host:" { print $2 }')" = "$EXPECTED_TARGET"
-          ./scripts/verify-release.sh "$VERSION"
+          # The runner owns the checkout mounted into this build container.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
+            ./scripts/verify-release.sh "$VERSION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: connector-${{ matrix.target }}
