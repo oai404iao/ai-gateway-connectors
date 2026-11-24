@@ -786,6 +786,26 @@ mod tests {
     }
 
     #[test]
+    fn responses_drop_sampling_parameters_on_both_transports() {
+        for interface in [
+            RequestInterface::ResponsesHttp,
+            RequestInterface::ResponsesWebSocket,
+        ] {
+            let applied = apply_json_body_policy(
+                interface,
+                Bytes::from_static(
+                    br#"{"model":"gpt-5-codex","input":[],"stream":true,"temperature":0.7,"top_p":0.9}"#,
+                ),
+            )
+            .unwrap();
+            let value: Value = serde_json::from_slice(&applied.body).unwrap();
+            assert!(value.get("temperature").is_none());
+            assert!(value.get("top_p").is_none());
+            assert_eq!(value["input"], json!([]));
+        }
+    }
+
+    #[test]
     fn codex_json_policy_uses_explicit_ignore_reject_and_override_rules() {
         let applied = apply_json_body_policy(
             RequestInterface::ImagesGeneration,
