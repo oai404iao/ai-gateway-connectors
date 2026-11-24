@@ -129,21 +129,13 @@
               ]
             },
             "safety_identifier": {},
-            "temperature": {
-              "accepted_values": [
-                null
-              ]
-            },
+            "temperature": {},
             "top_logprobs": {
               "accepted_values": [
                 null
               ]
             },
-            "top_p": {
-              "accepted_values": [
-                null
-              ]
-            },
+            "top_p": {},
             "truncation": {
               "accepted_values": [
                 null,
@@ -274,21 +266,13 @@
               ]
             },
             "safety_identifier": {},
-            "temperature": {
-              "accepted_values": [
-                null
-              ]
-            },
+            "temperature": {},
             "top_logprobs": {
               "accepted_values": [
                 null
               ]
             },
-            "top_p": {
-              "accepted_values": [
-                null
-              ]
-            },
+            "top_p": {},
             "truncation": {
               "accepted_values": [
                 null,
